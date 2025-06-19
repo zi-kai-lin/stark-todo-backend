@@ -3,8 +3,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from "morgan";
 import bodyParser from "body-parser";
-import { testConnection, initializeDatabase } from './config/database';
-
+import { testConnection, initializeDatabase, pool } from './config/database';
+import { authRouter } from "./router/auth";
 
 
 const corsSettings = {
@@ -46,7 +46,7 @@ app.use(morgan('tiny'));  // HTTP request logger
 app.use(bodyParser.json()); // Parse JSON request bodies
 
 
-
+app.use("/api/auth", authRouter);
 
 
 app.get('/', (req: Request, res: Response) => {
@@ -58,6 +58,30 @@ app.get('/', (req: Request, res: Response) => {
 
 
 })
+
+
+
+const shutdown = async (signal: string) => {
+    console.log(`Shutting down`);
+    
+    try {
+        if (pool) {
+            await pool.end();
+            console.log("SQL pool closed");
+        }
+        
+        process.exit(0);
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+    }
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));   // Ctrl+C
+
+
+
 
 export default app;
 

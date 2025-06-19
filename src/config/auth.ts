@@ -15,8 +15,8 @@ interface TokenValidationResult {
    payload: TokenPayload | null;
 }
 
-const JWT_SECRET = getRequiredEnvVar('JWT_SECRET');
-const JWT_EXPIRY = process.env.JWT_EXPIRY || '3600'; // seconds
+const JWT_SECRET = getRequiredEnvVar('SECRET_KEY');
+const JWT_EXPIRY = process.env.SECRET_EXPIRATION || '3600'; // seconds
 
 export const generateToken = (userId: number, username: string): string => {
    const payload: TokenPayload = {
@@ -71,3 +71,12 @@ export const cookieConfig = {
    maxAge: parseSecondsToMilliseconds(JWT_EXPIRY),
    path: '/'
 };
+
+
+export const clearAuthCookie = {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'strict' as const,
+    maxAge: 0,  
+    path: '/'   
+  };

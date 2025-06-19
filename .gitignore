@@ -24,6 +24,7 @@ src/*
 !src/server.ts
 !src/config/
 !src/utils/
+!src/controller/
 
 
 # Keep configuration files
