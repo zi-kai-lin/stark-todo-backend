@@ -1,0 +1,29 @@
+# Node modules
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+# Exclude all except specific source files
+src/*
+!src/app.ts
+!src/server.ts
+
+
+# Keep configuration files
+!tsconfig.json
+!nodemon.json

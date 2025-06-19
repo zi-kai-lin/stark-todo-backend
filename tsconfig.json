@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "target": "es2020",          // Updated to ES2020 for newer features
+    "moduleResolution": "node",
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "./src",          // Added source directory
+    "strict": true,              // Enabled strict type checking
+    "lib": ["es2020"]            // Moved inside compilerOptions
+  },
+  "include": ["src/**/*"],       // Only include files in src directory
+  "exclude": ["node_modules", "**/*.test.ts"]  // Exclude node_modules and test files
+}
