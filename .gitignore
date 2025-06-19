@@ -22,6 +22,7 @@ yarn-error.log*
 src/*
 !src/app.ts
 !src/server.ts
+!src/config/
 
 
 # Keep configuration files
