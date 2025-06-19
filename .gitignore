@@ -23,6 +23,7 @@ src/*
 !src/app.ts
 !src/server.ts
 !src/config/
+!src/utils/
 
 
 # Keep configuration files

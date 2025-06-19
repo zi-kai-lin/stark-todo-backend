@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import { getRequiredEnvVar } from '../utils/envVar'; // Reuse your env var validation function
 
 dotenv.config();
 
@@ -11,13 +12,7 @@ interface DbConfig {
   port: number;
 }
 
-const getRequiredEnvVar = (name: string): string => {
-    const value = process.env[name];
-    if (!value) {
-      throw new Error(`Required environment variable ${name} is missing`);
-    }
-    return value;
-};
+
 
 const dbConfig: DbConfig = {
   host: process.env.DB_HOST || 'localhost',
@@ -31,7 +26,7 @@ const dbConfig: DbConfig = {
 const pool = mysql.createPool(dbConfig);
 
 
-export const  testConnection = async (): Promise<void>  =>{
+export const testConnection = async (): Promise<void>  =>{
   try {
     const connection = await pool.getConnection();
     console.log('Database connection successful');
