@@ -33,3 +33,5 @@ src/*
 # Keep configuration files
 !tsconfig.json
 !nodemon.json
+
+!scrap.ts
