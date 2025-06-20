@@ -89,11 +89,11 @@ export const register = async (req: Request, res: Response) : Promise<Response> 
           const token = generateToken(user.id, user.username);
         
           // Commit transaction
-          await connection.commit();
+          await connection.commit();    
           
           // Set the JWT in an HTTP-only cookie instead of Authorization header
           res.cookie('auth_token', token, cookieConfig);
-          
+
           return res.status(200).json({
               message: "success",
               user: {
@@ -178,6 +178,7 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
 
         // Set the JWT in an HTTP-only cookie
         res.cookie('auth_token', token, cookieConfig);
+
 
         return res.status(200).json({
             message: "login successful",

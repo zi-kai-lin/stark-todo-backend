@@ -3,9 +3,11 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from "morgan";
 import bodyParser from "body-parser";
+import cookieParser from "cookie-parser"
 import { testConnection, initializeDatabase, pool } from './config/database';
 import { authRouter } from "./router/auth";
-
+import { userRouter } from "./router/user";
+import { taskRouter } from "./router/task";
 
 const corsSettings = {
     origin: [
@@ -43,11 +45,13 @@ const app = express();
 app.use(cors(corsSettings));
 app.use(helmet());
 app.use(morgan('tiny'));  // HTTP request logger
-app.use(bodyParser.json()); // Parse JSON request bodies
+app.use(bodyParser.json()); 
+app.use(cookieParser());
 
 
 app.use("/api/auth", authRouter);
-
+app.use("/api/user", userRouter);
+app.use("/api/task", taskRouter);
 
 app.get('/', (req: Request, res: Response) => {
 

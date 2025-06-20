@@ -77,7 +77,7 @@ export async function initializeDatabase(): Promise<void> {
         CREATE TABLE IF NOT EXISTS tasks (
             task_id INT AUTO_INCREMENT PRIMARY KEY,
             description TEXT NOT NULL,
-            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            date_created DATETIME DEFAULT CURRENT_TIMESTAMP,
             due_date DATE NOT NULL,
             completed BOOLEAN DEFAULT FALSE,
             parent_id INT NULL,
