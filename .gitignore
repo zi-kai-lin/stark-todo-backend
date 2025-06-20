@@ -19,15 +19,8 @@ yarn-error.log*
 
 
 # Exclude all except specific source files
-src/*
-!src/app.ts
-!src/server.ts
-!src/config/
-!src/utils/
-!src/controller/
-!src/middlewares/
-!src/router/
-!src/models/
+!src/*
+
 
 
 # Keep configuration files

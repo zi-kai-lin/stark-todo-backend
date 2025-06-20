@@ -1,6 +1,9 @@
 // models/task.ts
 import { pool } from '../config/database';
 import { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import { UserBasic } from "./user"
+
+
 
 export interface Task {
   taskId?: number;
@@ -11,6 +14,36 @@ export interface Task {
   parentId?: number | null;
   completed?: boolean;
   dateCreated?: Date;
+}
+
+export interface TaskWithChildren {
+    task: Task;
+    children: Task[];
+}
+
+
+export interface TaskComment {
+    commentId?: number;
+    taskId: number;
+    userId: number;
+    content: string;
+    dateCreated?: Date;
+}
+
+export interface CommentWithUser extends TaskComment{
+
+    username: string,
+
+}
+
+
+export interface taskAssignedAndWatched {
+
+
+    assigned: UserBasic[];
+    watchers: UserBasic[];
+
+
 }
 
 
@@ -273,7 +306,7 @@ export const updateTask = async (
         
         // child task cannot udpate group id
         if (isChildTask && updateData.groupId !== undefined) {
-            throw new Error('Sub task group change not allowed');
+            throw new Error('Sub task group update not allowed');
         }
         
         // Check if task is being updated to another group (when updated groupId is not the same with current group id)
@@ -447,5 +480,697 @@ export const updateTask = async (
         throw error;
     } finally {
         if (connection) connection.release();
+    }
+};
+
+
+
+/**
+ * Delete a task and its child tasks if applicable
+ * @param taskId - ID of the task to delete
+ * @param userId - ID of the user performing the deletion
+ * @returns Promise<boolean> - True if deletion was successful
+ */
+export const deleteTask = async (
+    taskId: number,
+    userId: number
+): Promise<boolean> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, owner_id, group_id, parent_id, completed
+             FROM tasks
+             WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const task = taskRows[0];
+        const isChildTask = task.parent_id !== null;
+        
+        // Check if owner
+        const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+        
+        if (!isOwner) {
+            // Check if member
+            const isMember = await checkTaskPrivilege('member', taskId, userId);
+            
+            if (!isMember) {
+                throw new Error('Insufficient privileges');
+            }
+        }
+        
+        // If this is a parent task, delete all child tasks first
+        if (!isChildTask) {
+
+            // Delete the task foreign key cascade will handle deletion
+            await connection.execute(
+                `DELETE FROM tasks WHERE task_id = ?`,
+                [taskId]
+            );
+        } 
+        // If child task, check if remaining child task of parent is still have incompleted
+        else {
+            // Delete the child task
+            await connection.execute(
+                `DELETE FROM tasks WHERE task_id = ?`,
+                [taskId]
+            );
+            
+            // Check remaining siblings' completion status
+            const [siblingRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT COUNT(*) as total, SUM(completed = 1) as completed
+                 FROM tasks
+                 WHERE parent_id = ?`,
+                [task.parent_id]
+            );
+            
+            const siblings = siblingRows[0];
+            
+            // If no siblings left or all remaining siblings are completed, mark parent as completed
+            if (siblings.total === 0 || (siblings.total > 0 && siblings.total === siblings.completed)) {
+                await connection.execute(
+                    `UPDATE tasks SET completed = 1 WHERE task_id = ?`,
+                    [task.parent_id]
+                );
+            }
+            // If there are uncompleted siblings, ensure parent is marked as uncompleted
+            else if (siblings.completed < siblings.total) {
+                await connection.execute(
+                    `UPDATE tasks SET completed = 0 WHERE task_id = ?`,
+                    [task.parent_id]
+                );
+            }
+        }
+        
+        await connection.commit();
+        return true;
+        
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Error deleting task:', error);
+        throw error;
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+
+
+  
+/**
+ * Get a task by ID with all its child tasks
+ * @param taskId - ID of the task to retrieve
+ * @param userId - ID of the user requesting the task
+ * @returns Promise<TaskWithChildren> - Task with its children or null if not found/no permission
+ */
+export const getTaskById = async (
+    taskId: number,
+    userId: number
+): Promise<TaskWithChildren | null> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, description, due_date, owner_id, group_id, 
+                    parent_id, completed, date_created
+            FROM tasks
+            WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const taskData = taskRows[0];
+        
+        // Check if user has permission to view this task
+        const isOwner = taskData.owner_id === userId;
+        let hasPermission = isOwner;
+        
+        // If not owner, check if user is a member of the task's group
+        if (!hasPermission && taskData.group_id) {
+            const isMember = await isGroupMember(taskData.group_id, userId);
+            hasPermission = isMember;
+        }
+        
+        if (!hasPermission) {
+            throw new Error('Insufficient privileges');
+        }
+        
+        // Map database row to Task interface
+        const task: Task = {
+            taskId: taskData.task_id,
+            description: taskData.description,
+            dueDate: taskData.due_date,
+            ownerId: taskData.owner_id,
+            groupId: taskData.group_id,
+            parentId: taskData.parent_id,
+            completed: !!taskData.completed,
+            dateCreated: taskData.date_created
+        };
+        
+        // Get all child tasks (if any)
+        const [childRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, description, due_date, owner_id, group_id, 
+                    parent_id, completed, date_created
+            FROM tasks
+            WHERE parent_id = ?
+            ORDER BY date_created ASC`,  // Order by creation date, oldest first
+            [taskId]
+        );
+        
+        // Map child rows to Task interface
+        const children: Task[] = childRows.map(row => ({
+            taskId: row.task_id,
+            description: row.description,
+            dueDate: row.due_date,
+            ownerId: row.owner_id,
+            groupId: row.group_id,
+            parentId: row.parent_id,
+            completed: !!row.completed,
+            dateCreated: row.date_created
+        }));
+        
+        return {
+            task,
+            children
+        };
+        
+    } catch (error) {
+        console.error('Error retrieving task:', error);
+        throw error;
+    } finally {
+        if (connection) await connection.release();
+    }
+};
+
+
+export const addTaskComment = async (
+    taskId: number,
+    userId: number,
+    content: string
+): Promise<TaskComment> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, owner_id, group_id 
+             FROM tasks 
+             WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const task = taskRows[0];
+        
+        // Check if user has permission to comment (owner or member)
+        const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+        
+        if (!isOwner) {
+            const isMember = await checkTaskPrivilege('member', taskId, userId);
+            
+            if (!isMember) {
+                throw new Error('Insufficient privileges to comment on this task');
+            }
+        }
+        
+        // Validate comment content
+        if (!content || content.trim() === '') {
+            throw new Error('Invalid Input');
+        }
+        
+        // Insert the comment
+        const [result] = await connection.execute<ResultSetHeader>(
+            `INSERT INTO task_comments (task_id, user_id, content, date_created) 
+             VALUES (?, ?, ?, NOW())`,
+            [taskId, userId, content.trim()]
+        );
+        
+        await connection.commit();
+        
+        // Return the newly created comment
+        return {
+            commentId: result.insertId,
+            taskId,
+            userId,
+            content: content.trim(),
+            dateCreated: new Date()
+        };
+        
+    } catch (error) {
+        if (connection) await connection.rollback();
+        throw error;
+    } finally {
+        if (connection) await connection.release();
+    }
+};
+
+
+export const deleteTaskComment = async (
+    commentId: number,
+    userId: number
+): Promise<boolean> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        
+        // Check if comment exists and get related task info
+        const [commentRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT c.comment_id, c.task_id, c.user_id, t.owner_id, t.group_id
+             FROM task_comments c
+             JOIN tasks t ON c.task_id = t.task_id
+             WHERE c.comment_id = ?`,
+            [commentId]
+        );
+        
+        if (commentRows.length === 0) {
+            throw new Error('Comment not found');
+        }
+        
+        const comment = commentRows[0];
+        
+        /* Comment owner can delete own comment */
+        /* Task owner can delete any comment under their task */
+        /* Group admin can delete any comment inside the group  */
+
+        const isCommentCreator = comment.user_id === userId;
+        let hasPermission = isCommentCreator;
+        
+        if (!hasPermission) {
+            // Check if user is the task owner
+            const isTaskOwner = comment.owner_id === userId;
+            hasPermission = isTaskOwner;
+            
+            // If not task owner, check if user is a group admin (if task is in a group)
+            if (!hasPermission && comment.group_id) {
+                const isAdmin = await isGroupMember(comment.group_id, userId, true);
+                hasPermission = isAdmin;
+            }
+        }
+        
+        if (!hasPermission) {
+            throw new Error('Insufficient privileges to delete this comment');
+        }
+        
+        // Delete the comment
+        const [result] = await connection.execute<ResultSetHeader>(
+            `DELETE FROM task_comments WHERE comment_id = ?`,
+            [commentId]
+        );
+        
+        if (result.affectedRows === 0) {
+            throw new Error('Failed to delete comment');
+        }
+        
+        await connection.commit();
+        return true;
+        
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error('Error deleting task comment:', error);
+        throw error;
+    } finally {
+        if (connection) await connection.release();
+    }
+};
+
+export const getTaskComments = async (
+    taskId: number,
+    userId: number
+): Promise<CommentWithUser[]> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, owner_id, group_id
+             FROM tasks
+             WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const task = taskRows[0];
+        
+        // Check if user has permission to view comments (owner or member)
+        const isOwner = task.owner_id === userId;
+        let hasPermission = isOwner;
+        
+        // If not owner, check if user is a member of the task's group
+        if (!hasPermission && task.group_id) {
+            const isMember = await isGroupMember(task.group_id, userId);
+            hasPermission = isMember;
+        }
+        
+        if (!hasPermission) {
+            throw new Error('Insufficient privileges');
+        }
+        
+        // Get all comments for this task including username
+        const [commentRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT c.comment_id, c.task_id, c.user_id, c.content, c.created_at as date_created, u.username
+             FROM task_comments c
+             JOIN users u ON c.user_id = u.user_id
+             WHERE c.task_id = ?
+             ORDER BY c.created_at ASC`,
+            [taskId]
+        );
+        
+        // Map rows to CommentWithUser interface
+        const comments: CommentWithUser[] = commentRows.map(row => ({
+            commentId: row.comment_id,
+            taskId: row.task_id,
+            userId: row.user_id,
+            content: row.content,
+            dateCreated: row.date_created,
+            username: row.username
+        }));
+        
+        return comments;
+        
+    } catch (error) {
+        console.error('Error retrieving task comments:', error);
+        throw error;
+    } finally {
+        if (connection) await connection.release();
+    }
+};
+
+
+export const getAssignedAndWatched = async ( taskId: number, userId: number) : Promise<taskAssignedAndWatched> =>{
+
+
+    let connection: PoolConnection | undefined;
+        
+        try {
+            connection = await pool.getConnection();
+            
+            // Check if task exists
+            const [taskRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT task_id, owner_id, group_id
+                FROM tasks
+                WHERE task_id = ?`,
+                [taskId]
+            );
+            
+            if (taskRows.length === 0) {
+                throw new Error('Task not found');
+            }
+            
+            const task = taskRows[0];
+            
+            // Check if user has permission to view task users (owner or member)
+            const isOwner = task.owner_id === userId;
+            let hasPermission = isOwner;
+            
+            // If not owner, check if user is a member of the task's group
+            if (!hasPermission && task.group_id) {
+                const isMember = await isGroupMember(task.group_id, userId);
+                hasPermission = isMember;
+            }
+            
+            if (!hasPermission) {
+                throw new Error('Insufficient privileges');
+            }
+            
+            // Get assigned users with usernames
+            const [assignedRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT t.user_id, u.username
+                FROM task_assigned t
+                JOIN users u ON t.user_id = u.user_id
+                WHERE t.task_id = ?`,
+                [taskId]
+            );
+            
+            // Get watchers with usernames
+            const [watcherRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT t.user_id, u.username
+                FROM task_watchers t
+                JOIN users u ON t.user_id = u.user_id
+                WHERE t.task_id = ?`,
+                [taskId]
+            );
+            
+            // Map to UserBasic objects
+            const assigned: UserBasic[] = assignedRows.map(row => ({
+                userId: row.user_id,
+                username: row.username
+            }));
+            
+            const watchers: UserBasic[] = watcherRows.map(row => ({
+                userId: row.user_id,
+                username: row.username
+            }));
+            
+            return { assigned, watchers };
+            
+        } catch (error) {
+            console.error('Error retrieving task users:', error);
+            throw error;
+        } finally {
+            if (connection) await connection.release();
+        }
+
+
+}
+
+
+export const assignOrWatchTask = async (
+    taskId: number,
+    targetUserId: number,
+    currentUserId: number,
+    type: 'assigned' | 'watcher'
+): Promise<boolean> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, owner_id, group_id, parent_id
+             FROM tasks
+             WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const task = taskRows[0];
+        
+        // Determine if self-addition or adding others
+        const isSelfAddition = targetUserId === currentUserId;
+        
+        if (isSelfAddition) {
+            // For self-addition, check if user is owner or member of the group
+            const isOwner = task.owner_id === currentUserId;
+            let hasPermission = isOwner;
+            
+            if (!hasPermission && task.group_id) {
+                const isMember = await isGroupMember(task.group_id, currentUserId);
+                hasPermission = isMember;
+            }
+            
+            if (!hasPermission) {
+                throw new Error(`Insufficient privileges`);
+            }
+        } else {
+            // Adding other require to be owner, parent task owner, or group admin
+            const isOwner = task.owner_id === currentUserId;
+            let hasPermission = isOwner;
+            
+            // Check if user is owner of parent task (if this is a subtask)
+            if (!hasPermission && task.parent_id) {
+                const [parentRows] = await connection.execute<RowDataPacket[]>(
+                    `SELECT owner_id FROM tasks WHERE task_id = ?`,
+                    [task.parent_id]
+                );
+                
+                if (parentRows.length > 0) {
+                    hasPermission = parentRows[0].owner_id === currentUserId;
+                }
+            }
+            
+            // Check if user is admin of the group (if task belongs to a group)
+            if (!hasPermission && task.group_id) {
+                const isAdmin = await isGroupMember(task.group_id, currentUserId, true);
+                hasPermission = isAdmin;
+            }
+            
+            if (!hasPermission) {
+                throw new Error(`Insufficient privileges`);
+            }
+            
+            // Check if the target user exists
+            const [userRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT user_id FROM users WHERE user_id = ?`,
+                [targetUserId]
+            );
+            
+            if (userRows.length === 0) {
+                throw new Error('User to add does not exist');
+            }
+            
+            // If task is in a group, verify the target user is a member of that group
+            if (task.group_id) {
+                const isMember = await isGroupMember(task.group_id, targetUserId);
+                
+                if (!isMember) {
+                    throw new Error(`Target user must be a member of this group`);
+                }
+            }
+        }
+        
+        // Determine table name based on type
+        const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+        
+        // Check if the user is already in the specified role for this task
+        const [existingRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT 1 FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+            [taskId, targetUserId]
+        );
+        
+        if (existingRows.length > 0) {
+            // User already has this role, treat as success but no action needed
+            await connection.commit();
+            return true;
+        }
+        
+        // Add the user to the specified role
+        await connection.execute(
+            `INSERT INTO ${tableName} (task_id, user_id) VALUES (?, ?)`,
+            [taskId, targetUserId]
+        );
+        
+        await connection.commit();
+        return true;
+        
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error(`Error adding user as ${type} to task:`, error);
+        throw error;
+    } finally {
+        if (connection) await connection.release();
+    }
+};
+
+
+export const removeAssignOrWatchTask = async (
+    taskId: number,
+    targetUserId: number,
+    currentUserId: number,
+    type: 'assigned' | 'watcher'
+): Promise<boolean> => {
+    let connection: PoolConnection | undefined;
+    
+    try {
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+        
+        // Check if task exists
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, owner_id, group_id, parent_id
+             FROM tasks
+             WHERE task_id = ?`,
+            [taskId]
+        );
+        
+        if (taskRows.length === 0) {
+            throw new Error('Task not found');
+        }
+        
+        const task = taskRows[0];
+        
+        // Determine table name based on type
+        const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+        
+        // Check if the association exists
+        const [existingRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT 1 FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+            [taskId, targetUserId]
+        );
+        
+        if (existingRows.length === 0) {
+            // User doesn't have this role, treat as success but no action needed
+            await connection.commit();
+            return true;
+        }
+        
+        // Determine if self-removal or removing others
+        const isSelfRemoval = targetUserId === currentUserId;
+        
+        if (!isSelfRemoval) {
+            // For removing others, need to be owner, parent owner, or group admin
+            const isOwner = task.owner_id === currentUserId;
+            let hasPermission = isOwner;
+            
+            // Check if user is owner of parent task (if this is a subtask)
+            if (!hasPermission && task.parent_id) {
+                const [parentRows] = await connection.execute<RowDataPacket[]>(
+                    `SELECT owner_id FROM tasks WHERE task_id = ?`,
+                    [task.parent_id]
+                );
+                
+                if (parentRows.length > 0) {
+                    hasPermission = parentRows[0].owner_id === currentUserId;
+                }
+            }
+            
+            // Check if user is admin of the group (if task belongs to a group)
+            if (!hasPermission && task.group_id) {
+                const isAdmin = await isGroupMember(task.group_id, currentUserId, true);
+                hasPermission = isAdmin;
+            }
+            
+            if (!hasPermission) {
+                throw new Error(`Insufficient privileges`);
+            }
+        }
+        
+        // Remove the user from the specified role
+        await connection.execute(
+            `DELETE FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+            [taskId, targetUserId]
+        );
+        
+        await connection.commit();
+        return true;
+        
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error(`Error removing user as ${type} from task:`, error);
+        throw error;
+    } finally {
+        if (connection) await connection.release();
     }
 };

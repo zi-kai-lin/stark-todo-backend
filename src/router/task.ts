@@ -8,10 +8,9 @@ import {
   getTaskById, 
   getTaskComments, 
   addTaskComment,
-  addWatcherToTask,
-  addAssignedToTask,
-  removeWatcherFromTask,
-  removeAssignedFromTask
+  createAssignOrWatchTask,
+  removeAssignOrWatchTask,
+
 } from '../controller/task';
 import { authenticator } from '../middleware/auth';
 
@@ -31,12 +30,12 @@ taskRouter.get('/:taskId/comments', getTaskComments);
 taskRouter.post('/:taskId/comments', addTaskComment);
 
 // Task watchers
-taskRouter.post('/:taskId/watchers', addWatcherToTask);
-taskRouter.delete('/:taskId/watchers/:userId', removeWatcherFromTask);
+taskRouter.post('/:taskId/watchers', createAssignOrWatchTask("watcher"));
+taskRouter.delete('/:taskId/watchers/:userId', removeAssignOrWatchTask("watcher"));
 
 // Task assignments
-taskRouter.post('/:taskId/assigned', addAssignedToTask);
-taskRouter.delete('/:taskId/assigned/:userId', removeAssignedFromTask);
+taskRouter.post('/:taskId/assigned', createAssignOrWatchTask("assigned"));
+taskRouter.delete('/:taskId/assigned/:userId', removeAssignOrWatchTask("watcher"));
 
 
 export { taskRouter };
