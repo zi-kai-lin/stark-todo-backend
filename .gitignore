@@ -26,6 +26,7 @@ src/*
 !src/utils/
 !src/controller/
 !src/middlewares/
+!src/router/
 
 
 # Keep configuration files
