@@ -5,9 +5,13 @@ import morgan from "morgan";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser"
 import { testConnection, initializeDatabase, pool } from './config/database';
+
+import { versionHeaderMiddleware } from "./middleware/versionHeader";
 import { authRouter } from "./router/auth";
 import { userRouter } from "./router/user";
 import { taskRouter } from "./router/task";
+import { groupRouter } from "./router/group";
+
 
 const corsSettings = {
     origin: [
@@ -49,9 +53,12 @@ app.use(bodyParser.json());
 app.use(cookieParser());
 
 
-app.use("/api/auth", authRouter);
-app.use("/api/user", userRouter);
-app.use("/api/task", taskRouter);
+app.use(versionHeaderMiddleware);
+
+app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/user", userRouter);
+app.use("/api/v1/task", taskRouter);
+app.use("/api/v1/group", groupRouter);
 
 app.get('/', (req: Request, res: Response) => {
 

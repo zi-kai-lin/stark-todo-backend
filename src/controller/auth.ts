@@ -1,130 +1,123 @@
 import { Request, Response } from 'express';
-import bcrypt from 'bcrypt'
+import bcrypt from 'bcrypt';
 import { generateToken, validateToken, cookieConfig, clearAuthCookie } from '../config/auth';
 import { pool } from '../config/database';
-import { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
+import { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import { 
+    successResponse, 
+    errorResponse, 
+    ErrorCode, 
+    HttpStatus,
+    ApiCategory 
+} from '../utils/apiResponse';
 
 interface User {
-
     id: number;
     username: string;
-
 }
 
-interface UserRow extends RowDataPacket{
+interface UserRow extends RowDataPacket {
     user_id: number;
     username: string;
     password: string;
 }
 
 interface RegistrationBody {
-
     username: string;
     password: string;
-
-
 }
 
-interface CustomError {
-
-    error: string;
-    message: string;
-
-
-} 
-
-
-
 // User registration handler
-export const register = async (req: Request, res: Response) : Promise<Response> => {
-
+export const register = async (req: Request, res: Response): Promise<Response> => {
     let connection: PoolConnection | undefined;
 
-    try{
-
+    try {
         connection = await pool.getConnection();
 
         const body = req.body as RegistrationBody;
-        const username = body.username;
-        const password = body.password;
+        const { username, password } = body;
 
-        if(!username || !password){
-            const error: CustomError = {
-                error: "registration error",
-                message: "invalid input"
-            };
-            throw error;
+        if (!username || !password) {
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.VALIDATION_ERROR,
+                "Username and password are required",
+                HttpStatus.BAD_REQUEST
+            );
         }
 
         await connection.beginTransaction();
 
-        const [users] = await connection.execute<any[]>(` SELECT 1 FROM users WHERE username = ?`, [username])
+        const [users] = await connection.execute<any[]>(
+            `SELECT 1 FROM users WHERE username = ?`, 
+            [username]
+        );
 
-        if (users.length > 0){
-
-            const error: CustomError = {
-                error: "registration error",
-                message: "existing username"
-            };
-            throw error;
-
+        if (users.length > 0) {
+            await connection.rollback();
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.VALIDATION_ERROR,
+                "Username already exists",
+                HttpStatus.CONFLICT
+            );
         }
 
         const saltRounds = 10;
-        const encryptedPassword = await bcrypt.hash(password, saltRounds)
+        const encryptedPassword = await bcrypt.hash(password, saltRounds);
 
-
-        const [insertResult] = await connection.execute<ResultSetHeader>(`
-            INSERT INTO users (username, password) VALUES (?,?);
-        `, [username, encryptedPassword]);
-
+        const [insertResult] = await connection.execute<ResultSetHeader>(
+            `INSERT INTO users (username, password) VALUES (?,?)`,
+            [username, encryptedPassword]
+        );
 
         const user: User = {
             id: insertResult.insertId,
             username: username,
-            
         };
 
-          // Generate JWT token
-          const token = generateToken(user.id, user.username);
+        // Generate JWT token
+        const token = generateToken(user.id, user.username);
         
-          // Commit transaction
-          await connection.commit();    
-          
-          // Set the JWT in an HTTP-only cookie instead of Authorization header
-          res.cookie('auth_token', token, cookieConfig);
+        // Commit transaction
+        await connection.commit();    
+        
+        // Set the JWT in an HTTP-only cookie
+        res.cookie('auth_token', token, cookieConfig);
 
-          return res.status(200).json({
-              message: "success",
-              user: {
-                  id: user.id,
-                  username: user.username,
-               
-              }
-          });
-    }
+        return successResponse(
+            res,
+            "Registration successful",
+            ApiCategory.AUTH,
+            {
+                user: {
+                    id: user.id,
+                    username: user.username
+                }
+            },
+            HttpStatus.CREATED
+        );
 
-    catch(error){
-
-        console.log(error);
+    } catch (error) {
+        console.error('Error during registration:', error);
+        
         if (connection) {
             await connection.rollback();
         }
-        
 
-        
-        return res.status(400).json({
-            error: "registration error",
-        });
-
-
-    }
-    finally{
-
+        return errorResponse(
+            res,
+            ApiCategory.AUTH,
+            ErrorCode.SERVER_ERROR,
+            "An unexpected error occurred during registration",
+            HttpStatus.INTERNAL_SERVER_ERROR
+        );
+    } finally {
         if (connection) {
             await connection.release();
         }
-
     }
 };
 
@@ -139,11 +132,13 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
         const { username, password } = body;
 
         if (!username || !password) {
-            const error: CustomError = {
-                error: "login error",
-                message: "invalid input"
-            };
-            throw error;
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.VALIDATION_ERROR,
+                "Username and password are required",
+                HttpStatus.BAD_REQUEST
+            );
         }
 
         // Get user from database
@@ -153,11 +148,13 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
         );
 
         if (users.length === 0) {
-            const error: CustomError = {
-                error: "login error",
-                message: "invalid credentials"
-            };
-            throw error;
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.UNAUTHORIZED_ERROR,
+                "Invalid username or password",
+                HttpStatus.UNAUTHORIZED
+            );
         }
 
         const user = users[0];
@@ -166,11 +163,13 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
         const passwordMatch = await bcrypt.compare(password, user.password);
 
         if (!passwordMatch) {
-            const error: CustomError = {
-                error: "login error",
-                message: "invalid credentials"
-            };
-            throw error;
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.UNAUTHORIZED_ERROR,
+                "Invalid username or password",
+                HttpStatus.UNAUTHORIZED
+            );
         }
 
         // Generate JWT token
@@ -179,41 +178,29 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
         // Set the JWT in an HTTP-only cookie
         res.cookie('auth_token', token, cookieConfig);
 
+        return successResponse(
+            res,
+            "Login successful",
+            ApiCategory.AUTH,
+            {
+                user: {
+                    id: user.user_id,
+                    username: user.username
+                }
+            },
+            HttpStatus.OK
+        );
 
-        return res.status(200).json({
-            message: "login successful",
-            user: {
-                id: user.user_id,
-                username: user.username
-            }
-        });
     } catch (error) {
-        console.log(error);
+        console.error('Error during login:', error);
 
-        // Check if it's our custom error with a safe message
-        if (
-            error && 
-            typeof error === 'object' && 
-            'message' in error && 
-            'error' in error && 
-            (
-                (error as CustomError).message === "invalid input" ||
-                (error as CustomError).message === "invalid credentials"
-            )
-        ) {
-            return res.status(401).json({
-                error: (error as CustomError).error,
-                message: (error as CustomError).message
-            });
-        }
-
-        // For all other errors, return a generic message
-        return res.status(500).json({
-            error: "login error",
-            message: "an unexpected error occurred"
-        });
-
-
+        return errorResponse(
+            res,
+            ApiCategory.AUTH,
+            ErrorCode.SERVER_ERROR,
+            "An unexpected error occurred during login",
+            HttpStatus.INTERNAL_SERVER_ERROR
+        );
     } finally {
         if (connection) {
             await connection.release();
@@ -227,15 +214,23 @@ export const logout = async (req: Request, res: Response): Promise<Response> => 
         // Clear the authentication cookie
         res.cookie('auth_token', '', clearAuthCookie);
 
-        return res.status(200).json({
-            message: "logout successful"
-        });
+        return successResponse(
+            res,
+            "Logout successful",
+            ApiCategory.AUTH,
+            {},
+            HttpStatus.OK
+        );
+
     } catch (error) {
-        console.log(error);
+        console.error('Error during logout:', error);
         
-        return res.status(500).json({
-            error: "logout error",
-           
-        });
+        return errorResponse(
+            res,
+            ApiCategory.AUTH,
+            ErrorCode.SERVER_ERROR,
+            "An unexpected error occurred during logout",
+            HttpStatus.INTERNAL_SERVER_ERROR
+        );
     }
 };

@@ -27,7 +27,7 @@ export const createGroup = async (params: GroupCreateParams): Promise<Group> => 
     await connection.beginTransaction();
     
     // Create the group
-    const [result] = await connection.query<ResultSetHeader>(
+    const [result] = await connection.execute<ResultSetHeader>(
       `INSERT INTO task_groups (name, description, created_by) 
        VALUES (?, ?, ?)`,
       [params.name, params.description, params.ownerId]
@@ -36,14 +36,17 @@ export const createGroup = async (params: GroupCreateParams): Promise<Group> => 
     const groupId = result.insertId;
     
     // Add the creator as an admin to the group
-    await connection.query(
+    await connection.execute(
       `INSERT INTO group_members (group_id, user_id, role) 
        VALUES (?, ?, 'admin')`,
       [groupId, params.ownerId]
     );
     
-    // Get the created group information with role
-    const [groups] = await connection.query<RowDataPacket[]>(
+    // Commit the transaction
+    await connection.commit();
+    
+    // Fetch the created group to return actual database timestamps
+    const [groups] = await connection.execute<RowDataPacket[]>(
       `SELECT 
         g.group_id as groupId, 
         g.name, 
@@ -56,9 +59,6 @@ export const createGroup = async (params: GroupCreateParams): Promise<Group> => 
        WHERE g.group_id = ? AND gm.user_id = ?`,
       [groupId, params.ownerId]
     );
-    
-    // Commit the transaction
-    await connection.commit();
     
     if (groups.length === 0) {
       throw new Error('Failed to create group');
@@ -85,7 +85,7 @@ export const createGroup = async (params: GroupCreateParams): Promise<Group> => 
   } finally {
     // Release the connection
     if (connection) {
-      connection.release();
+      await connection.release();
     }
   }
 };
@@ -97,7 +97,7 @@ export const deleteGroup = async (groupId: number, userId: number): Promise<bool
       connection = await pool.getConnection();
       
       // First, check if the group exists
-      const [groups] = await connection.query<RowDataPacket[]>(
+      const [groups] = await connection.execute<RowDataPacket[]>(
         `SELECT group_id FROM task_groups WHERE group_id = ?`,
         [groupId]
       );
@@ -107,7 +107,7 @@ export const deleteGroup = async (groupId: number, userId: number): Promise<bool
       }
       
       // Check if the user is an admin of the group
-      const [members] = await connection.query<RowDataPacket[]>(
+      const [members] = await connection.execute<RowDataPacket[]>(
         `SELECT role FROM group_members 
          WHERE group_id = ? AND user_id = ? AND role = 'admin'`,
         [groupId, userId]
@@ -121,7 +121,7 @@ export const deleteGroup = async (groupId: number, userId: number): Promise<bool
       await connection.beginTransaction();
       
       // Delete the group (cascade will handle related records)
-      const [result] = await connection.query<ResultSetHeader>(
+      const [result] = await connection.execute<ResultSetHeader>(
         `DELETE FROM task_groups WHERE group_id = ?`,
         [groupId]
       );
@@ -142,7 +142,7 @@ export const deleteGroup = async (groupId: number, userId: number): Promise<bool
     } finally {
       // Release the connection
       if (connection) {
-        connection.release();
+        await connection.release();
       }
     }
 };
@@ -158,7 +158,7 @@ export const addUserToGroup = async (
       connection = await pool.getConnection();
       
       // Check if the group exists
-      const [groups] = await connection.query<RowDataPacket[]>(
+      const [groups] = await connection.execute<RowDataPacket[]>(
         `SELECT group_id FROM task_groups WHERE group_id = ?`,
         [groupId]
       );
@@ -168,7 +168,7 @@ export const addUserToGroup = async (
       }
       
       // Check if the requesting user is an admin of the group
-      const [members] = await connection.query<RowDataPacket[]>(
+      const [members] = await connection.execute<RowDataPacket[]>(
         `SELECT role FROM group_members 
          WHERE group_id = ? AND user_id = ? AND role = 'admin'`,
         [groupId, userId]
@@ -179,7 +179,7 @@ export const addUserToGroup = async (
       }
       
       // Check if the target user exists
-      const [users] = await connection.query<RowDataPacket[]>(
+      const [users] = await connection.execute<RowDataPacket[]>(
         `SELECT user_id FROM users WHERE user_id = ?`,
         [targetUserId]
       );
@@ -189,7 +189,7 @@ export const addUserToGroup = async (
       }
       
       // Check if the user is already in the group
-      const [existingMember] = await connection.query<RowDataPacket[]>(
+      const [existingMember] = await connection.execute<RowDataPacket[]>(
         `SELECT user_id FROM group_members 
          WHERE group_id = ? AND user_id = ?`,
         [groupId, targetUserId]
@@ -203,7 +203,7 @@ export const addUserToGroup = async (
       await connection.beginTransaction();
       
       // Add the user to the group as a member
-      const [result] = await connection.query<ResultSetHeader>(
+      const [result] = await connection.execute<ResultSetHeader>(
         `INSERT INTO group_members (group_id, user_id, role) 
          VALUES (?, ?, 'member')`,
         [groupId, targetUserId]
@@ -225,7 +225,7 @@ export const addUserToGroup = async (
     } finally {
       // Release the connection
       if (connection) {
-        connection.release();
+        await connection.release();
       }
     }
 };
@@ -241,7 +241,7 @@ export const removeUserFromGroup = async (
       connection = await pool.getConnection();
       
       // Check if the group exists
-      const [groups] = await connection.query<RowDataPacket[]>(
+      const [groups] = await connection.execute<RowDataPacket[]>(
         `SELECT group_id, created_by FROM task_groups WHERE group_id = ?`,
         [groupId]
       );
@@ -253,7 +253,7 @@ export const removeUserFromGroup = async (
       const groupCreator = groups[0].created_by;
       
       // Check if the requesting user is an admin of the group
-      const [members] = await connection.query<RowDataPacket[]>(
+      const [members] = await connection.execute<RowDataPacket[]>(
         `SELECT role FROM group_members 
          WHERE group_id = ? AND user_id = ? AND role = 'admin'`,
         [groupId, userId]
@@ -264,7 +264,7 @@ export const removeUserFromGroup = async (
       }
       
       // Check if the target user is in the group
-      const [targetMember] = await connection.query<RowDataPacket[]>(
+      const [targetMember] = await connection.execute<RowDataPacket[]>(
         `SELECT user_id FROM group_members 
          WHERE group_id = ? AND user_id = ?`,
         [groupId, targetUserId]
@@ -283,32 +283,35 @@ export const removeUserFromGroup = async (
       await connection.beginTransaction();
       
       // Get all tasks associated with this group
-      const [groupTasks] = await connection.query<RowDataPacket[]>(
+      const [groupTasks] = await connection.execute<RowDataPacket[]>(
         `SELECT task_id FROM tasks WHERE group_id = ?`,
         [groupId]
       );
       
       const taskIds = groupTasks.map(task => task.task_id);
       
-      // If there are tasks in this group
+      // If there are tasks in this group, remove user from task assignments
       if (taskIds.length > 0) {
+        // Create placeholders for IN clause
+        const placeholders = taskIds.map(() => '?').join(',');
+        
         // Remove user from assigned tasks in this group
-        await connection.query(
+        await connection.execute(
           `DELETE FROM task_assigned 
-           WHERE user_id = ? AND task_id IN (?)`,
-          [targetUserId, taskIds]
+           WHERE user_id = ? AND task_id IN (${placeholders})`,
+          [targetUserId, ...taskIds]  
         );
         
         // Remove user from watched tasks in this group
-        await connection.query(
+        await connection.execute(
           `DELETE FROM task_watchers 
-           WHERE user_id = ? AND task_id IN (?)`,
-          [targetUserId, taskIds]
+           WHERE user_id = ? AND task_id IN (${placeholders})`,
+          [targetUserId, ...taskIds]  
         );
       }
       
       // Remove the user from the group
-      const [result] = await connection.query<ResultSetHeader>(
+      const [result] = await connection.execute<ResultSetHeader>(
         `DELETE FROM group_members 
          WHERE group_id = ? AND user_id = ?`,
         [groupId, targetUserId]
@@ -330,7 +333,7 @@ export const removeUserFromGroup = async (
     } finally {
       // Release the connection
       if (connection) {
-        connection.release();
+        await connection.release();
       }
     }
 };

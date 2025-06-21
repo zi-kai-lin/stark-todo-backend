@@ -37,7 +37,7 @@ export interface CommentWithUser extends TaskComment{
 }
 
 
-export interface taskAssignedAndWatched {
+export interface TaskAssignedAndWatched {
 
 
     assigned: UserBasic[];
@@ -53,10 +53,6 @@ interface ParentTaskRow extends RowDataPacket {
     group_id: number | null;
 }
 
-
-interface GroupMemberRow extends RowDataPacket {
-    role: string;
-  }
 
 
 
@@ -229,7 +225,7 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
         const isMember = await isGroupMember(taskData.groupId, taskData.ownerId);
         
         if (!isMember) {
-          throw new Error('Insufficient Privileges');
+          throw new Error('Insufficient privileges');
         }
       }
       
@@ -255,13 +251,29 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
       
       await connection.commit();
       
-      return {
-        ...taskData,
-        taskId: result.insertId,
-        completed: taskData.completed || false,
-        dateCreated: new Date()
-      };
-      
+
+
+
+        const [taskRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT task_id, description, due_date, owner_id, group_id, 
+                    parent_id, completed, date_created
+            FROM tasks WHERE task_id = ?`,
+            [result.insertId]
+        );
+
+        const task = taskRows[0];
+        return {
+            taskId: task.task_id,
+            description: task.description,
+            dueDate: task.due_date,
+            ownerId: task.owner_id,
+            groupId: task.group_id,
+            parentId: task.parent_id,
+            completed: !!task.completed,
+            dateCreated: task.date_created  
+        };
+
+
     } catch (error) {
       if (connection) await connection.rollback();
       throw error;
@@ -286,7 +298,7 @@ export const updateTask = async (
         
         // Determine if task exists
         const [taskRows] = await connection.execute<RowDataPacket[]>(
-            `SELECT task_id, owner_id, group_id, description, due_date, completed, status, parent_id, date_created
+            `SELECT task_id, owner_id, group_id, description, due_date, completed, parent_id, date_created
              FROM tasks
              WHERE task_id = ?`,
             [taskId]
@@ -306,7 +318,7 @@ export const updateTask = async (
         
         // child task cannot udpate group id
         if (isChildTask && updateData.groupId !== undefined) {
-            throw new Error('Sub task group update not allowed');
+            throw new Error('Insufficient privileges');
         }
         
         // Check if task is being updated to another group (when updated groupId is not the same with current group id)
@@ -347,7 +359,7 @@ export const updateTask = async (
                 const isMember = await checkTaskPrivilege('member', taskId, userId);
                 
                 if (!isMember) {
-                    throw new Error('Insufficient privileges: Must be a member of the task group');
+                    throw new Error('Insufficient privileges');
                 }
             }
         }
@@ -456,7 +468,7 @@ export const updateTask = async (
         // Fetch the updated task
         const [updatedTaskRows] = await connection.execute<RowDataPacket[]>(
             `SELECT task_id, description, due_date, owner_id, group_id, 
-                    parent_id, completed, date_created, status
+                    parent_id, completed, date_created
              FROM tasks
              WHERE task_id = ?`,
             [taskId]
@@ -479,7 +491,7 @@ export const updateTask = async (
         if (connection) await connection.rollback();
         throw error;
     } finally {
-        if (connection) connection.release();
+        if (connection) await connection.release();
     }
 };
 
@@ -579,7 +591,7 @@ export const deleteTask = async (
         console.error('Error deleting task:', error);
         throw error;
     } finally {
-        if (connection) connection.release();
+        if (connection) await connection.release();
     }
 };
 
@@ -595,7 +607,7 @@ export const deleteTask = async (
 export const getTaskById = async (
     taskId: number,
     userId: number
-): Promise<TaskWithChildren | null> => {
+): Promise<TaskWithChildren> => {
     let connection: PoolConnection | undefined;
     
     try {
@@ -721,20 +733,26 @@ export const addTaskComment = async (
         
         // Insert the comment
         const [result] = await connection.execute<ResultSetHeader>(
-            `INSERT INTO task_comments (task_id, user_id, content, date_created) 
-             VALUES (?, ?, ?, NOW())`,
+            `INSERT INTO task_comments (task_id, user_id, content) 
+             VALUES (?, ?, ?)`,
             [taskId, userId, content.trim()]
         );
         
         await connection.commit();
         
-        // Return the newly created comment
+        const [commentRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT comment_id, task_id, user_id, content, created_at 
+            FROM task_comments WHERE comment_id = ?`,
+            [result.insertId]
+        );
+
+        const comment = commentRows[0];
         return {
-            commentId: result.insertId,
-            taskId,
-            userId,
-            content: content.trim(),
-            dateCreated: new Date()
+            commentId: comment.comment_id,
+            taskId: comment.task_id,
+            userId: comment.user_id,
+            content: comment.content,
+            dateCreated: comment.created_at  
         };
         
     } catch (error) {
@@ -884,7 +902,7 @@ export const getTaskComments = async (
 };
 
 
-export const getAssignedAndWatched = async ( taskId: number, userId: number) : Promise<taskAssignedAndWatched> =>{
+export const getAssigneesAndWatchers = async ( taskId: number, userId: number) : Promise<TaskAssignedAndWatched> =>{
 
 
     let connection: PoolConnection | undefined;

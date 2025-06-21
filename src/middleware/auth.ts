@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { validateToken } from '../config/auth';
-
+import { errorResponse, ErrorCode, HttpStatus, ApiCategory } from "../utils/apiResponse"
 
 // extend to allow for req.user
 /* handle user prop from req */
@@ -24,20 +24,28 @@ export const authenticator = (req: Request, res: Response, next: NextFunction) :
         const token = req.cookies.auth_token;
         if(!token){
 
-            return res.status(401).json({ 
-                error: "authentication error", 
-                message: "missing authentication" 
-            });
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.UNAUTHORIZED_ERROR,
+                "Missing Authentication",
+                HttpStatus.UNAUTHORIZED
+
+
+            )
 
         }
 
         const validation = validateToken(token);
         console.log(validation)
         if (!validation.valid || !validation.payload) {
-            return res.status(401).json({ 
-                error: "authentication error", 
-                message: validation.expired ? "session expired" : "invalid authentication" 
-            });
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.UNAUTHORIZED_ERROR,
+                validation.expired ? "Session expired" : "Invalid authentication",
+                HttpStatus.UNAUTHORIZED
+            );
         }
 
         req.user = {
@@ -51,10 +59,13 @@ export const authenticator = (req: Request, res: Response, next: NextFunction) :
     } catch (error) {
         // Handle any unexpected errors during authentication
         console.error('Authentication error:', error);
-        return res.status(401).json({ 
-            error: "authentication error", 
-            message: "authentication failed" 
-        });
+        return errorResponse(
+            res,
+            ApiCategory.AUTH,
+            ErrorCode.UNAUTHORIZED_ERROR,
+            "Authentication failed",
+            HttpStatus.UNAUTHORIZED
+        );
     }
 
  

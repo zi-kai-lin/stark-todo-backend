@@ -1,9 +1,13 @@
 import express, { Request, Response } from 'express';
-
+import { categoryMiddleware } from '../middleware/categoryHeader';
+import { ApiCategory } from '../utils/apiResponse';
 // Import controller functions (to be implemented later)
 import { register, login, logout } from '../controller/auth';
 
 const authRouter = express.Router();
+
+
+authRouter.use(categoryMiddleware(ApiCategory.AUTH));
 
 // Define routes
 authRouter.post("/register", register);

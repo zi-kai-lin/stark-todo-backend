@@ -78,7 +78,7 @@ export async function initializeDatabase(): Promise<void> {
             task_id INT AUTO_INCREMENT PRIMARY KEY,
             description TEXT NOT NULL,
             date_created DATETIME DEFAULT CURRENT_TIMESTAMP,
-            due_date DATE NOT NULL,
+            due_date DATE NULL,
             completed BOOLEAN DEFAULT FALSE,
             parent_id INT NULL,
             owner_id INT NOT NULL,

@@ -220,16 +220,15 @@ export const getAvailableTasks = async (
             return [];
         }
         
-        // Fetch all child tasks for all parent tasks in a single query
+        const placeholders = parentTaskIds.map(() => '?').join(',');
         const [allChildRows] = await connection.execute<RowDataPacket[]>(
             `SELECT task_id, description, due_date, owner_id, group_id, 
                     parent_id, completed, date_created
              FROM tasks
-             WHERE parent_id IN (?)
+             WHERE parent_id IN (${placeholders})
              ORDER BY parent_id, date_created ASC`,
-            [parentTaskIds]
+            parentTaskIds
         );
-        
         // Group child tasks by parent_id
         const childTasksByParent: { [parentId: number]: Task[] } = {};
         
