@@ -69,6 +69,7 @@ export const getTaskById = async (req: Request, res: Response): Promise<Response
 };
 
 export const createTask = async (req: Request, res: Response): Promise<Response> => {
+    console.log("here")
     try {
         const userId = req.user!.userId;
         const category = res.locals.apiCategory;

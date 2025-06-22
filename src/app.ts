@@ -16,7 +16,7 @@ import { groupRouter } from "./router/group";
 const corsSettings = {
     origin: [
         "http://localhost:3000",
-        "http://localhost:3005"
+        "http://localhost:4000"
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -36,7 +36,7 @@ const app = express();
         console.log('Initializing database schema');
         await initializeDatabase();
         
-        console.log('Database initialization complete, app ready');
+        console.log('Database initialization complete, app ready, ');
     } catch (error) {
         console.error('Database initialization failed:', error);
         console.error('Exiting...');
@@ -52,24 +52,11 @@ app.use(morgan('tiny'));  // HTTP request logger
 app.use(bodyParser.json()); 
 app.use(cookieParser());
 
-
 app.use(versionHeaderMiddleware);
-
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/user", userRouter);
 app.use("/api/v1/task", taskRouter);
 app.use("/api/v1/group", groupRouter);
-
-app.get('/', (req: Request, res: Response) => {
-
-
-    res.status(200).json({ message: 'Hello from Todo API!' });
-
-
-
-
-})
-
 
 
 const shutdown = async (signal: string) => {

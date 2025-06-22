@@ -1,10 +1,34 @@
 import dotenv from 'dotenv';
+import { testConnection, initializeDatabase } from '../src/config/database';
 
+// Load test environment variables
 dotenv.config({ path: './tests/.env.test' });
 
-jest.setTimeout(5000);
+jest.setTimeout(15000);
 
-jest.mock('../src/config/database', () => {
+// Global setup - run REAL database initialization once before all tests
+beforeAll(async () => {
+  console.log('Database initialization...');
+  
+  try {
+    // Test real database connection
+    await testConnection();
+    console.log('Database connection successful');
+    
+    // Initialize real database schema
+    await initializeDatabase();
+    console.log('Database schema initialized');
+    
+  } catch (error) {
+    console.error('Database setup failed:', error);
+    throw error;
+  }
+});
+
+// After the real setup, mock the database for individual tests
+beforeAll(() => {
+  // Mock the database module for individual tests (after real setup)
+  jest.doMock('../src/config/database', () => {
     const { mockPool } = require('./mock/database');
     return { 
       pool: mockPool,
@@ -12,13 +36,15 @@ jest.mock('../src/config/database', () => {
       initializeDatabase: jest.fn().mockResolvedValue(undefined)
     };
   });
-
-// This function runs before each test file
-beforeAll(() => {
-  console.log('Starting tests...');
 });
 
-// This function runs after each test file
+// Reset mocks before each test
+beforeEach(() => {
+  const { resetMocks } = require('./mock/database');
+  resetMocks();
+});
+
+// Cleanup after all tests
 afterAll(() => {
-  console.log('Tests completed.');
+  console.log('Test database setup completed.');
 });

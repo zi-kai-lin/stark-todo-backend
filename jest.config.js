@@ -3,6 +3,6 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testRegex: '/tests/.*\\.test\\.ts$',
-  moduleFileExtensions: ['ts'],
+  moduleFileExtensions: ['ts', 'js'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
 };
