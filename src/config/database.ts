@@ -1,8 +1,10 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
-import { getRequiredEnvVar } from '../utils/envVar'; // Reuse your env var validation function
+import path from 'path';
+import { getRequiredEnvVar, loadEnvPath } from '../utils/envVar'; // Reuse your env var validation function
 
-dotenv.config();
+const envPath = loadEnvPath()
+dotenv.config(envPath);
 
 interface DbConfig {
   host: string;
@@ -10,6 +12,7 @@ interface DbConfig {
   password: string;
   database: string;
   port: number;
+  timezone: string;
 }
 
 
@@ -20,6 +23,8 @@ const dbConfig: DbConfig = {
   password: getRequiredEnvVar('DB_PASSWORD'),
   database: getRequiredEnvVar('DB_NAME'),
   port: parseInt(process.env.DB_PORT || '3306', 10),
+  timezone: '+00:00' // Set timezone to UTC
+  
 };
 
 // Create a connection pool

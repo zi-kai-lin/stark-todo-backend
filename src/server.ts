@@ -1,9 +1,12 @@
 // src/server.ts
 import dotenv from 'dotenv';
 import app from './app';
-
+import { loadEnvPath } from './utils/envVar';
 // Load environment variables
-dotenv.config();
+
+const envPath = loadEnvPath()
+dotenv.config(envPath);
+
 
 const PORT = process.env.PORT || 3000;
 

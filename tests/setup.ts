@@ -1,8 +1,11 @@
 import dotenv from 'dotenv';
 import { testConnection, initializeDatabase } from '../src/config/database';
-
+import { loadEnvPath } from '../src/utils/envVar';
 // Load test environment variables
-dotenv.config({ path: './tests/.env.test' });
+
+const envPath = loadEnvPath()
+dotenv.config(envPath);
+
 
 jest.setTimeout(15000);
 

@@ -1,8 +1,10 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import { getRequiredEnvVar } from '../utils/envVar';
+import { getRequiredEnvVar,  loadEnvPath } from '../utils/envVar';
 
-dotenv.config();
+
+const envPath = loadEnvPath()
+dotenv.config(envPath);
 
 interface TokenPayload {
    userId: number;

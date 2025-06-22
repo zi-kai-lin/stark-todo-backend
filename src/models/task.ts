@@ -174,6 +174,10 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
       connection = await pool.getConnection();
       await connection.beginTransaction();
       
+      const [columns] = await connection.execute(
+        `DESCRIBE tasks`
+      );
+
       // Check if parent task exists when parent id is specified
       if (taskData.parentId) {
         // Get parent task details to verify it exists
@@ -451,12 +455,16 @@ export const updateTask = async (
                 const siblings = siblingRows[0];
                 
                 // If all siblings are now completed, update parent task
-                if (siblings.total === siblings.completed) {
+                if (siblings.total === parseInt(siblings.completed)) {
+
                     await connection.execute(
                         `UPDATE tasks SET completed = 1 WHERE task_id = ?`,
                         [task.parent_id]
                     );
+
                 }
+
+
             } else {
                 // Child task marked as uncompleted - parent must also be marked uncompleted
                 await connection.execute(
@@ -501,13 +509,13 @@ export const updateTask = async (
 
 
 /* 
+
     刪除任務
 
     刪除子任務 或者是 parent 任務
 
     parent : 相關子任務會被刪除
     子任務： 刪除子任務後 查看其他子任務的 status, 如果都完成， 那 parent 也完成
-
 
 */
 export const deleteTask = async (
@@ -575,7 +583,7 @@ export const deleteTask = async (
             const siblings = siblingRows[0];
             
             // If no siblings left or all remaining siblings are completed, mark parent as completed
-            if (siblings.total === 0 || (siblings.total > 0 && siblings.total === siblings.completed)) {
+            if (siblings.total === 0 || (siblings.total > 0 && siblings.total === parseInt(siblings.completed))) {
                 await connection.execute(
                     `UPDATE tasks SET completed = 1 WHERE task_id = ?`,
                     [task.parent_id]
@@ -605,12 +613,13 @@ export const deleteTask = async (
 
 
   
-/**
- * Get a task by ID with all its child tasks
- * @param taskId - ID of the task to retrieve
- * @param userId - ID of the user requesting the task
- * @returns Promise<TaskWithChildren> - Task with its children or null if not found/no permission
- */
+/* 
+
+    單獨任務存取
+
+    查看任務是否存在 -> 檢查權限 （任務建立這 , 任務所在的團隊成員）
+
+*/
 export const getTaskById = async (
     taskId: number,
     userId: number
