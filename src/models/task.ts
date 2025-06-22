@@ -705,7 +705,16 @@ export const getTaskById = async (
     }
 };
 
+/* 
 
+    在任務歷史增加評論
+
+    1. 檢查 留言 的 目標任務是否存在
+    2. 查看 現在 userId 是否是 任務 的 建立人
+    3. 留言目標任務是否在 你屬於的團體內
+
+
+*/
 export const addTaskComment = async (
     taskId: number,
     userId: number,
@@ -780,6 +789,12 @@ export const addTaskComment = async (
 };
 
 
+/* 
+    刪除留言 
+    1. 你是 留言 者
+    2. 你是 留言 的任務 建立人
+    3. 你是 目前 團 的 admin
+*/
 export const deleteTaskComment = async (
     commentId: number,
     userId: number
@@ -850,6 +865,14 @@ export const deleteTaskComment = async (
     }
 };
 
+
+/* 
+    查看任務歷史留言
+
+    1. 你是目標任務建立者
+    2. 你在於目標任務的團體內
+
+*/
 export const getTaskComments = async (
     taskId: number,
     userId: number
@@ -918,84 +941,16 @@ export const getTaskComments = async (
 };
 
 
-export const getAssigneesAndWatchers = async ( taskId: number, userId: number) : Promise<TaskAssignedAndWatched> =>{
 
+/* 
+ Assign 和 Watcher 類似， 所以採用 parameter type 來進行分別以節省時間
 
-    let connection: PoolConnection | undefined;
-        
-        try {
-            connection = await pool.getConnection();
-            
-            // Check if task exists
-            const [taskRows] = await connection.execute<RowDataPacket[]>(
-                `SELECT task_id, owner_id, group_id
-                FROM tasks
-                WHERE task_id = ?`,
-                [taskId]
-            );
-            
-            if (taskRows.length === 0) {
-                throw new Error('Task not found');
-            }
-            
-            const task = taskRows[0];
-            
-            // Check if user has permission to view task users (owner or member)
-            const isOwner = task.owner_id === userId;
-            let hasPermission = isOwner;
-            
-            // If not owner, check if user is a member of the task's group
-            if (!hasPermission && task.group_id) {
-                const isMember = await isGroupMember(task.group_id, userId);
-                hasPermission = isMember;
-            }
-            
-            if (!hasPermission) {
-                throw new Error('Insufficient privileges');
-            }
-            
-            // Get assigned users with usernames
-            const [assignedRows] = await connection.execute<RowDataPacket[]>(
-                `SELECT t.user_id, u.username
-                FROM task_assigned t
-                JOIN users u ON t.user_id = u.user_id
-                WHERE t.task_id = ?`,
-                [taskId]
-            );
-            
-            // Get watchers with usernames
-            const [watcherRows] = await connection.execute<RowDataPacket[]>(
-                `SELECT t.user_id, u.username
-                FROM task_watchers t
-                JOIN users u ON t.user_id = u.user_id
-                WHERE t.task_id = ?`,
-                [taskId]
-            );
-            
-            // Map to UserBasic objects
-            const assigned: UserBasic[] = assignedRows.map(row => ({
-                userId: row.user_id,
-                username: row.username
-            }));
-            
-            const watchers: UserBasic[] = watcherRows.map(row => ({
-                userId: row.user_id,
-                username: row.username
-            }));
-            
-            return { assigned, watchers };
-            
-        } catch (error) {
-            console.error('Error retrieving task users:', error);
-            throw error;
-        } finally {
-            if (connection) await connection.release();
-        }
+ 這邊就使用 “關注” 爲例子 以來 說明
 
+ 1. 加自己爲關注人 （需要 任務爲 自己建立的 / 團體 其他成員的）
+ 2. 加 別人爲關注人 （需要 自己是任務建立人， 子任務關系人（parent task 由你自己建立）， 團體 admin) 
 
-}
-
-
+*/
 export const assignOrWatchTask = async (
     taskId: number,
     targetUserId: number,
@@ -1118,7 +1073,10 @@ export const assignOrWatchTask = async (
     }
 };
 
-
+/* 
+    和 以上 assignOrWatchTask 權限 類似
+    移除 assign/watch
+*/
 export const removeAssignOrWatchTask = async (
     taskId: number,
     targetUserId: number,
@@ -1148,21 +1106,9 @@ export const removeAssignOrWatchTask = async (
         // Determine table name based on type
         const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
         
-        // Check if the association exists
-        const [existingRows] = await connection.execute<RowDataPacket[]>(
-            `SELECT 1 FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-            [taskId, targetUserId]
-        );
-        
-        if (existingRows.length === 0) {
-            // User doesn't have this role, treat as success but no action needed
-            await connection.commit();
-            return true;
-        }
-        
+
         // Determine if self-removal or removing others
         const isSelfRemoval = targetUserId === currentUserId;
-        
         if (!isSelfRemoval) {
             // For removing others, need to be owner, parent owner, or group admin
             const isOwner = task.owner_id === currentUserId;
@@ -1189,7 +1135,34 @@ export const removeAssignOrWatchTask = async (
             if (!hasPermission) {
                 throw new Error(`Insufficient privileges`);
             }
+        } else {
+            // For self-removal, check if user is owner or member of the task's group
+            const isOwner = task.owner_id === currentUserId;
+            let hasPermission = isOwner;
+            
+            // If not owner, check if user is a member of the task's group
+            if (!hasPermission && task.group_id) {
+                const isMember = await isGroupMember(task.group_id, currentUserId);
+                hasPermission = isMember;
+            }
+            
+            if (!hasPermission) {
+                throw new Error(`Insufficient privileges`);
+            }
         }
+        
+        // Check if user is assigned/watching a task
+        const [existingRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT 1 FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+            [taskId, targetUserId]
+        );
+        
+        if (existingRows.length === 0) {
+            // If not just return true
+            await connection.commit();
+            return true;
+        }
+        
         
         // Remove the user from the specified role
         await connection.execute(
@@ -1208,3 +1181,91 @@ export const removeAssignOrWatchTask = async (
         if (connection) await connection.release();
     }
 };
+
+/* 
+
+    查看 目標任務 觀看/指派人
+
+*/
+export const getAssigneesAndWatchers = async ( taskId: number, userId: number) : Promise<TaskAssignedAndWatched> =>{
+
+
+    let connection: PoolConnection | undefined;
+        
+        try {
+            connection = await pool.getConnection();
+            
+            // Check if task exists
+            const [taskRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT task_id, owner_id, group_id
+                FROM tasks
+                WHERE task_id = ?`,
+                [taskId]
+            );
+            
+            if (taskRows.length === 0) {
+                throw new Error('Task not found');
+            }
+            
+            const task = taskRows[0];
+            
+            // Check if user has permission to view task users (owner or member)
+            const isOwner = task.owner_id === userId;
+            let hasPermission = isOwner;
+            
+            // If not owner, check if user is a member of the task's group
+            if (!hasPermission && task.group_id) {
+                const isMember = await isGroupMember(task.group_id, userId);
+                hasPermission = isMember;
+            }
+            
+            if (!hasPermission) {
+                throw new Error('Insufficient privileges');
+            }
+            
+            // Get assigned users with usernames
+            const [assignedRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT t.user_id, u.username
+                FROM task_assigned t
+                JOIN users u ON t.user_id = u.user_id
+                WHERE t.task_id = ?`,
+                [taskId]
+            );
+            
+            // Get watchers with usernames
+            const [watcherRows] = await connection.execute<RowDataPacket[]>(
+                `SELECT t.user_id, u.username
+                FROM task_watchers t
+                JOIN users u ON t.user_id = u.user_id
+                WHERE t.task_id = ?`,
+                [taskId]
+            );
+            
+            // Map to UserBasic objects
+            const assigned: UserBasic[] = assignedRows.map(row => ({
+                userId: row.user_id,
+                username: row.username
+            }));
+            
+            const watchers: UserBasic[] = watcherRows.map(row => ({
+                userId: row.user_id,
+                username: row.username
+            }));
+            
+            return { assigned, watchers };
+            
+        } catch (error) {
+            console.error('Error retrieving task users:', error);
+            throw error;
+        } finally {
+            if (connection) await connection.release();
+        }
+
+
+}
+
+
+
+
+
+

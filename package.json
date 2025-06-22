@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "NODE_ENV=testing jest",
+    "test": "NODE_ENV=testing jest --verbose",
     "test:watch": "NODE_ENV=testing jest --watch",
     "test:coverage": "NODE_ENV=testing jest --coverage",
     "test:verbose": "NODE_ENV=testing jest --verbose",

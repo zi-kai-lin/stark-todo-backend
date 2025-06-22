@@ -57,7 +57,8 @@ export const getAvailableTasks = async (req: Request, res: Response): Promise<Re
             mode = 'personal', 
             dateOption, 
             sortBy = 'dueDate',
-            groupOptions: requestGroupOptions = {}
+            groupOptions: requestGroupOptions = {},
+            childViewOptions: requestChildViewOptions = {}
         } = req.body;
         
         // Validate mode
@@ -107,6 +108,48 @@ export const getAvailableTasks = async (req: Request, res: Response): Promise<Re
             };
         }
         
+        // Prepare the childViewOptions object
+        let childViewOptions = undefined;
+        
+        if (requestChildViewOptions && Object.keys(requestChildViewOptions).length > 0) {
+            // Validate childViewOptions properties if provided
+            if (requestChildViewOptions.showChild !== undefined && typeof requestChildViewOptions.showChild !== 'boolean') {
+                return errorResponse(
+                    res,
+                    category,
+                    ErrorCode.INVALID_FORMAT,
+                    "showChild must be a boolean",
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+            
+            if (requestChildViewOptions.ownerExclusive !== undefined && typeof requestChildViewOptions.ownerExclusive !== 'boolean') {
+                return errorResponse(
+                    res,
+                    category,
+                    ErrorCode.INVALID_FORMAT,
+                    "ownerExclusive must be a boolean",
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+            
+            if (requestChildViewOptions.sortChildren !== undefined && typeof requestChildViewOptions.sortChildren !== 'boolean') {
+                return errorResponse(
+                    res,
+                    category,
+                    ErrorCode.INVALID_FORMAT,
+                    "sortChildren must be a boolean",
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+            
+            childViewOptions = {
+                showChild: requestChildViewOptions.showChild,
+                ownerExclusive: requestChildViewOptions.ownerExclusive,
+                sortChildren: requestChildViewOptions.sortChildren
+            };
+        }
+        
         // Validate date format if provided
         if (dateOption && !/^\d{4}-\d{2}-\d{2}$/.test(dateOption)) {
             return errorResponse(
@@ -124,7 +167,8 @@ export const getAvailableTasks = async (req: Request, res: Response): Promise<Re
             mode,
             dateOption,
             sortBy,
-            groupOptions
+            groupOptions,
+            childViewOptions
         );
         
         return successResponse(

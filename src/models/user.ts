@@ -65,6 +65,24 @@ export const getGroupsByUserId = async (userId: number): Promise<Group[]> => {
 };
 
 
+/* 
+ 依據現在的使用者 存取 不同 任務資料
+
+ 模式 (mode) ： personal （查看 自己建立的任務）, assigned （查看被指派的 任務）, watching (查看 在關注的 任務), group (查看團體內的 任務 )
+ dueDate 日期 (dateOption?): YYYY-MM-DD 格式日期 來節選 任務 dueDate 
+ 排序 （sortBy) : 可按照 建立日期 (dateCreated) <default>, 完成日 (dueDate), 建立者（owner), 和 任務id (taskId) 排序回傳結果
+ 
+ 團體選項 (groupOptions?):
+   mode === "group" 時需要:
+   1. 團隊id (groupId)， 查看所有相關 groupId 的任務: int
+   2. 任務創作人篩選 (ownerFilter): int 
+   3. 任務指派節選 (assignedFilter): true/false, 只看到在團隊裏被指派的任務
+
+子任務選項 (childViewOptions?):
+   1. 查詢子任務（false 只會抓 parent, return [{parentTask}...]; true 會抓 children, return [{parentTask, children:[childTask...]}...]) 
+   2. 限定自己建立的子任務 （在團體裏因爲別人也可以在自己的任務下增加子任務; false 可以看到別人建立 而 true 限定看到自己的）
+   3. 子任務排序 （false 爲 dateCreated, 而 true 將會 follow 上面 (排序）sortBy 的規則 
+   */ 
 export const getAvailableTasks = async (
     userId: number,
     mode: 'personal' | 'assigned' | 'watching' | 'group',
@@ -72,11 +90,21 @@ export const getAvailableTasks = async (
     sortBy: 'dueDate' | 'dateCreated' | 'owner' | 'taskId' = 'dueDate',
     groupOptions?: { 
         groupId: number, 
-        ownerFilter?: number,  // Optional owner filter
-        assignedFilter?: boolean  // Optional assigned filter, defaults to false
+        ownerFilter?: number,  
+        assignedFilter?: boolean  
+    },
+    childViewOptions?: {
+        showChild?: boolean,
+        ownerExclusive?: boolean,
+        sortChildren?: boolean
     }
 ): Promise<TaskWithChildren[]> => {
     let connection: PoolConnection | undefined;
+    
+    // Set defaults for childViewOptions
+    const showChild = childViewOptions?.showChild ?? false;
+    const ownerExclusive = childViewOptions?.ownerExclusive ?? false;
+    const sortChildren = childViewOptions?.sortChildren ?? false;
     
     try {
         connection = await pool.getConnection();
@@ -96,7 +124,7 @@ export const getAvailableTasks = async (
         const queryParams: any[] = [];
         
         // Only select parent tasks (where parent_id is NULL)
-        // We'll fetch children separately for each parent
+        // We'll fetch children separately for each parent if showChild is true
         
         if (mode === 'personal') {
             baseQuery = `
@@ -192,10 +220,10 @@ export const getAvailableTasks = async (
         let orderClause: string;
         switch (sortBy) {
             case 'dueDate':
-                orderClause = 'ORDER BY t.due_date ASC';
+                orderClause = 'ORDER BY -t.due_date DESC';
                 break;
             case 'dateCreated':
-                orderClause = 'ORDER BY t.date_created DESC';
+                orderClause = 'ORDER BY -t.date_created ASC';
                 break;
             case 'owner':
                 orderClause = 'ORDER BY t.owner_id ASC';
@@ -204,13 +232,36 @@ export const getAvailableTasks = async (
                 orderClause = 'ORDER BY t.task_id ASC';
                 break;
             default:
-                orderClause = 'ORDER BY t.due_date ASC';
+                orderClause = 'ORDER BY -t.date_created ASC';
         }
         
         baseQuery += ` ${orderClause}`;
         
         // Execute the query to get parent tasks
         const [parentTaskRows] = await connection.execute<RowDataPacket[]>(baseQuery, queryParams);
+        
+        // If showChild is false, return parent tasks with empty children arrays
+        if (!showChild) {
+            const tasksWithChildren: TaskWithChildren[] = parentTaskRows.map(row => {
+                const parentTask: Task = {
+                    taskId: row.task_id,
+                    description: row.description,
+                    dueDate: row.due_date,
+                    ownerId: row.owner_id,
+                    groupId: row.group_id,
+                    parentId: row.parent_id,
+                    completed: !!row.completed,
+                    dateCreated: row.date_created
+                };
+                
+                return {
+                    task: parentTask,
+                    children: []
+                };
+            });
+            
+            return tasksWithChildren;
+        }
         
         // Create a list of parent task IDs
         const parentTaskIds = parentTaskRows.map(row => row.task_id);
@@ -220,15 +271,48 @@ export const getAvailableTasks = async (
             return [];
         }
         
-        const placeholders = parentTaskIds.map(() => '?').join(',');
-        const [allChildRows] = await connection.execute<RowDataPacket[]>(
-            `SELECT task_id, description, due_date, owner_id, group_id, 
-                    parent_id, completed, date_created
-             FROM tasks
-             WHERE parent_id IN (${placeholders})
-             ORDER BY parent_id, date_created ASC`,
-            [...parentTaskIds]
-        );
+        // Build child query with owner filtering if needed
+        let childQuery = `
+            SELECT task_id, description, due_date, owner_id, group_id, 
+                   parent_id, completed, date_created
+            FROM tasks
+            WHERE parent_id IN (${parentTaskIds.map(() => '?').join(',')})
+        `;
+        
+        const childQueryParams = [...parentTaskIds];
+        
+        // Add owner filter for children if ownerExclusive is true
+        if (ownerExclusive) {
+            childQuery += ` AND owner_id = ?`;
+            childQueryParams.push(userId);
+        }
+        
+        // Add sorting for children
+        if (sortChildren) {
+            let childOrderClause: string;
+            switch (sortBy) {
+                case 'dueDate':
+                    childOrderClause = 'ORDER BY parent_id, -due_date DESC';
+                    break;
+                case 'dateCreated':
+                    childOrderClause = 'ORDER BY parent_id, -date_created ASC';
+                    break;
+                case 'owner':
+                    childOrderClause = 'ORDER BY parent_id, owner_id ASC';
+                    break;
+                case 'taskId':
+                    childOrderClause = 'ORDER BY parent_id, task_id ASC';
+                    break;
+                default:
+                    childOrderClause = 'ORDER BY parent_id, -date_created ASC';
+            }
+            childQuery += ` ${childOrderClause}`;
+        } else {
+            childQuery += ` ORDER BY parent_id, -date_created ASC`;
+        }
+        
+        const [allChildRows] = await connection.execute<RowDataPacket[]>(childQuery, childQueryParams);
+        
         // Group child tasks by parent_id
         const childTasksByParent: { [parentId: number]: Task[] } = {};
         
