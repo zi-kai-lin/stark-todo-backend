@@ -28,6 +28,7 @@ interface RegistrationBody {
 }
 
 // User registration handler
+/* 使用 注冊完 提供 jwt cookie */
 export const register = async (req: Request, res: Response): Promise<Response> => {
     let connection: PoolConnection | undefined;
 
@@ -121,7 +122,7 @@ export const register = async (req: Request, res: Response): Promise<Response> =
     }
 };
 
-// User login handler
+// 登錄認證完一樣 setCookie 
 export const login = async (req: Request, res: Response): Promise<Response> => {
     let connection: PoolConnection | undefined;
 
@@ -208,7 +209,7 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
     }
 };
 
-// User logout handler
+// set Cookie => Expire Now
 export const logout = async (req: Request, res: Response): Promise<Response> => {
     try {
         // Clear the authentication cookie

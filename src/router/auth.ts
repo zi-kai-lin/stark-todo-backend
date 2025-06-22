@@ -6,15 +6,14 @@ import { register, login, logout } from '../controller/auth';
 
 const authRouter = express.Router();
 
+/* Route specific to user authenticaiton 使用者登錄等 */
 
 authRouter.use(categoryMiddleware(ApiCategory.AUTH));
 
-// Define routes
+// Auehtnication Routes
 authRouter.post("/register", register);
 authRouter.post("/login", login);
 authRouter.post("/logout", logout);
-authRouter.get("/test", (req: Request, res: Response) => {
-    return res.status(200).json({ message: "Authentication router is working" });
-});
+
 
 export { authRouter };

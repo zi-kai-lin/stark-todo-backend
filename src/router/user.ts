@@ -10,23 +10,12 @@ const userRouter = express.Router();
 userRouter.use(authenticator);
 userRouter.use(categoryMiddleware(ApiCategory.USER));
 
-// Define routes
-userRouter.get("/groups", getAvailableGroups);
-userRouter.post("/tasks", getAvailableTasks); // Using POST since we're sending filter options in the body
+/* 使用者個人用的 API */
 
-// Test route to verify authenticator middleware - now consistent with API standards
-userRouter.get("/test", (req: Request, res: Response) => {
-    const category = res.locals.apiCategory;
-    
-    return successResponse(
-        res,
-        "User router is working",
-        category,
-        { 
-            user: req.user,
-            authenticated: true 
-        }
-    );
-});
+// Define routes 查看自己的團隊 & 自己的任務
+userRouter.get("/groups", getAvailableGroups);
+userRouter.post("/tasks", getAvailableTasks); 
+
+
 
 export { userRouter };

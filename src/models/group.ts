@@ -17,6 +17,7 @@ export interface Group {
   role: string; // 'admin' or 'member'
 }
 
+/* 在 task_group table 下 新增一個 自己 (userId)，和 group name & description ， role 爲 admin   */
 export const createGroup = async (params: GroupCreateParams): Promise<Group> => {
   let connection: PoolConnection | undefined;
   
@@ -67,28 +68,30 @@ export const createGroup = async (params: GroupCreateParams): Promise<Group> => 
     return groups[0] as Group;
     
   } catch (error) {
-    // Rollback transaction on error
+
     if (connection) {
       await connection.rollback();
     }
     
-    // Handle specific errors
     if (error instanceof Error) {
-      // Check for duplicate entry error (unique constraint violation)
+
       if (error.message.includes('Duplicate entry') && error.message.includes('name')) {
         throw new Error('Group name already exists');
       }
     }
     
-    // Re-throw the error
     throw error;
   } finally {
-    // Release the connection
     if (connection) {
       await connection.release();
     }
   }
 };
+
+
+
+
+/* 刪除前先看看 在不在 ， 然後 在看看你是不是 admin 內部 task 會隨着 group 刪除 而刪掉  */
 
 export const deleteGroup = async (groupId: number, userId: number): Promise<boolean> => {
     let connection: PoolConnection | undefined;
@@ -132,20 +135,20 @@ export const deleteGroup = async (groupId: number, userId: number): Promise<bool
       return result.affectedRows > 0;
       
     } catch (error) {
-      // Rollback transaction if it was started
       if (connection) {
         await connection.rollback();
       }
       
-      // Re-throw the error
       throw error;
     } finally {
-      // Release the connection
       if (connection) {
         await connection.release();
       }
     }
 };
+
+
+/* 看你在不在團裏，如果在， 看你是不是 admin, 在看 target user 在不在 加進來後 爲 普通 member privilege */
 
 export const addUserToGroup = async (
     groupId: number, 
@@ -199,7 +202,6 @@ export const addUserToGroup = async (
         throw new Error('User already in group');
       }
       
-      // Start transaction
       await connection.beginTransaction();
       
       // Add the user to the group as a member
@@ -209,31 +211,32 @@ export const addUserToGroup = async (
         [groupId, targetUserId]
       );
       
-      // Commit the transaction
       await connection.commit();
       
       return result.affectedRows > 0;
       
     } catch (error) {
-      // Rollback transaction if a connection exists
       if (connection) {
         await connection.rollback();
       }
       
-      // Re-throw the error
+
       throw error;
     } finally {
-      // Release the connection
+
       if (connection) {
         await connection.release();
       }
     }
 };
 
+
+/* 看你在不在團裏，如果在， 看你是不是 admin, 在看 target user 在不在, 沒辦法刪除 團隊 擁有者， 刪除相關 任務， 指派，關注， 資料 */
+/* 未來更進 =》 應該刪掉 user comment, task delete 應該要遵循 completed 查看 (細節在 Models/task.ts) */
 export const removeUserFromGroup = async (
     groupId: number, 
     targetUserId: number, 
-    userId: number
+    userId: number  
     ): Promise<boolean> => {
     let connection: PoolConnection | undefined;
     
@@ -317,21 +320,17 @@ export const removeUserFromGroup = async (
         [groupId, targetUserId]
       );
       
-      // Commit the transaction
       await connection.commit();
       
       return result.affectedRows > 0;
       
     } catch (error) {
-      // Rollback transaction if a connection exists
       if (connection) {
         await connection.rollback();
       }
       
-      // Re-throw the error
       throw error;
     } finally {
-      // Release the connection
       if (connection) {
         await connection.release();
       }

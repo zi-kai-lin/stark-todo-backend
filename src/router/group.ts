@@ -1,27 +1,32 @@
 import express, { Request, Response } from 'express';
+import { authenticator } from '../middleware/auth';
 import { categoryMiddleware } from '../middleware/categoryHeader';
 import { ApiCategory } from '../utils/apiResponse';
-// Import controller functions
+
+
+/* Route specific to Task Groups (分享任務的團隊) */
+
+
+// Controller imports
 import { 
   createGroup,
   deleteGroup,
   addUserToGroup,
   removeUserFromGroup
 } from '../controller/group';
-import { authenticator } from '../middleware/auth';
 
 const groupRouter = express.Router();
 
-// Apply authenticator middleware to all group routes
+// Middleware Application
 groupRouter.use(authenticator);
 groupRouter.use(categoryMiddleware(ApiCategory.GROUP));
 
-// Group operations
+// Group Specific Operation 團隊創立刪除
 groupRouter.post('/', createGroup);
-groupRouter.delete('/:id', deleteGroup);  // Changed from /:groupId to /:id
+groupRouter.delete('/:id', deleteGroup); 
 
-// Group user management
-groupRouter.post('/:id/users/:targetUserId', addUserToGroup);     // Changed to match task pattern
-groupRouter.delete('/:id/users/:targetUserId', removeUserFromGroup); // Changed to match task pattern
+// Group-user operations 團隊邀請 & 踢出
+groupRouter.post('/:id/users/:targetUserId', addUserToGroup);   
+groupRouter.delete('/:id/users/:targetUserId', removeUserFromGroup); 
 
 export { groupRouter };

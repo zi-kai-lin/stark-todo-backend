@@ -7,7 +7,7 @@ import {
   HttpStatus 
 } from '../utils/apiResponse';
 
-// Create a new group
+/* 名字必須 (不能重復）， 細節 optional */
 export const createGroup = async (req: Request, res: Response): Promise<Response> => {
     try {
         const userId = req.user!.userId;
@@ -62,6 +62,7 @@ export const createGroup = async (req: Request, res: Response): Promise<Response
     }
 };
 
+/* Group Id 必須， 使用 自己 認證後提供 user id （只能刪自己的） */
 export const deleteGroup = async (req: Request, res: Response): Promise<Response> => {
     try {
         const userId = req.user!.userId;
@@ -121,6 +122,7 @@ export const deleteGroup = async (req: Request, res: Response): Promise<Response
     }
 };
 
+/* 可以吧別人加到自己的團裏面， 需要提供 自己 group Id & 別人的 User id （不能重復加） */
 export const addUserToGroup = async (req: Request, res: Response): Promise<Response> => {
     try {
         const userId = req.user!.userId;
@@ -191,7 +193,7 @@ export const addUserToGroup = async (req: Request, res: Response): Promise<Respo
         );
     }
 };
-
+/* 可以把人踢走， 權限細節請看 Models/group.ts */
 export const removeUserFromGroup = async (req: Request, res: Response): Promise<Response> => {
     try {
         const userId = req.user!.userId;

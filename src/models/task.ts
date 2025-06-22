@@ -56,14 +56,7 @@ interface ParentTaskRow extends RowDataPacket {
 
 
 
-
-/**
- * Check if a user is a member of a specific group
- * @param groupId - ID of the group to check
- * @param userId - ID of the user
- * @param requireAdmin - Whether to check for admin role
- * @returns Promise<boolean> - True if user is a member (or admin if specified)
- */
+/* helper function - 查看是否在團裏， admin or member? */
 export const isGroupMember = async (
     groupId: number,
     userId: number,
@@ -94,13 +87,9 @@ export const isGroupMember = async (
 };
 
 
-/**
- * Check if a user has a specific privilege level for a task
- * @param privilegeLevel - Level of privilege to check ("owner", "member", or "admin")
- * @param taskId - ID of the task to check
- * @param userId - ID of the user
- * @returns Promise<boolean> - True if user has the specified privilege level
- */
+/* Helper funciton - 查看使用者 有沒有 指定 task 的  owner/ member（限團）/ admin （限團） 權利
+可改進-》 和上面功能有些重疊
+*/
 export const checkTaskPrivilege = async (
     privilegeLevel: 'owner' | 'member' | 'admin',
     taskId: number,
@@ -157,7 +146,6 @@ export const checkTaskPrivilege = async (
             return adminRows.length > 0;
         }
         
-        // This should never happen due to TypeScript type checking
         return false;
         
     } catch (error) {
@@ -169,11 +157,15 @@ export const checkTaskPrivilege = async (
 };
 
 
-/* Task Creation - Updated to use improved helper function 
-ensure that 
-child task should inherit parent task group id
-aka when parent id is provided, query the parent to get it's group id regardless of subtask group id
+/* 
+    新增任務，
+    三個 case 
+    1. 增加 parent task （沒有指定 groupId)
+    2. 增加 parent task （有指定 groupId) （加到團裏面，需要看 你是不是 團裏面的成員之一)
+    3. 新增 子任務 (child task) 
+    這樣分是因爲，如果你不在同一個團裏面，你是沒有 permission 隨便在別人的 parent task 下面 新增 child task
 
+    新增的 子任務 會遺傳 parent task 的 groupId 
 */
 export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>): Promise<Task> => {
     let connection: PoolConnection | undefined;
@@ -283,7 +275,18 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
 };
 
 
+/* 
+    更改任務，
+    主軸在於 任務狀態 & 團隊 跟新
 
+    子任務跟新後 如果同個 parent 其他子任務都爲完成時， parent 跟新成 完成 Vice versa
+    相反的 如果以完成 parent 和 子任務被跟新成未完成， 也同樣互相跟新
+
+
+    parent 團隊跟新後， 子任務也必須同樣跟新。 子任務本身無法跟新 自己的 group
+
+
+*/
 export const updateTask = async (
     taskId: number, 
     userId: number, 
@@ -425,7 +428,7 @@ export const updateTask = async (
                 );
             }
             
-            // CHANGED: If completion status is changing (in either direction), cascade to all child tasks
+            //  If completion status is changing (in either direction), cascade to all child tasks
             if (isCompletionUpdated) {
                 // Set all child tasks to the same completion status as the parent
                 await connection.execute(
@@ -434,7 +437,7 @@ export const updateTask = async (
                 );
             }
         }
-        // CHANGED: Handle child task completion status updates affecting parent
+        //  Handle child task completion status updates affecting parent
         else if (isCompletionUpdated) {
             if (updateData.completed) {
                 // Child task marked as completed - check if all siblings are also completed
@@ -497,12 +500,16 @@ export const updateTask = async (
 
 
 
-/**
- * Delete a task and its child tasks if applicable
- * @param taskId - ID of the task to delete
- * @param userId - ID of the user performing the deletion
- * @returns Promise<boolean> - True if deletion was successful
- */
+/* 
+    刪除任務
+
+    刪除子任務 或者是 parent 任務
+
+    parent : 相關子任務會被刪除
+    子任務： 刪除子任務後 查看其他子任務的 status, 如果都完成， 那 parent 也完成
+
+
+*/
 export const deleteTask = async (
     taskId: number,
     userId: number
