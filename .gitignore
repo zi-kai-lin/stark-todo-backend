@@ -19,11 +19,12 @@ yarn-error.log*
 
 
 # Exclude all except specific source files
-src/*
-!src/app.ts
-!src/server.ts
+!src/*
+
 
 
 # Keep configuration files
 !tsconfig.json
 !nodemon.json
+
+!scrap.ts

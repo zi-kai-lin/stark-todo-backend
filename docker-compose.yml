@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "4005:4005"
+    environment:
+      - NODE_ENV=production
+      - PORT=4005
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=root
+      - DB_NAME=to_do
+      - SECRET_KEY=default-secret-key-for-demo
+      - SECRET_EXPIRATION=3600
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - todo-demo
+
+  db:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "4006:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=to_do
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    networks:
+      - todo-demo
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "4007:80"
+    environment:
+      - PMA_HOST=db
+      - PMA_USER=root
+      - PMA_PASSWORD=root
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - todo-demo
+
+volumes:
+  mysql_data:
+
+networks:
+  todo-demo:
+    driver: bridge
