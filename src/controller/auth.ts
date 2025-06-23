@@ -14,18 +14,18 @@ import {
 interface User {
     id: number;
     username: string;
-}
+};
 
 interface UserRow extends RowDataPacket {
     user_id: number;
     username: string;
     password: string;
-}
+};
 
 interface RegistrationBody {
     username: string;
     password: string;
-}
+};
 
 // User registration handler
 /* 使用 注冊完 提供 jwt cookie */
@@ -47,10 +47,31 @@ export const register = async (req: Request, res: Response): Promise<Response> =
                 HttpStatus.BAD_REQUEST
             );
         }
+        
+        // Check for any whitespace
+        if (/\s/.test(username)) {
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.VALIDATION_ERROR,
+                "Username cannot contain spaces or whitespace",
+                HttpStatus.BAD_REQUEST 
+            );
+        }
+        
+        if (username.length < 3 || username.length > 50) {
+            return errorResponse(
+                res,
+                ApiCategory.AUTH,
+                ErrorCode.VALIDATION_ERROR,
+                "Username must be 3-50 characters",
+                HttpStatus.BAD_REQUEST 
+            );
+        }
 
         await connection.beginTransaction();
 
-        const [users] = await connection.execute<any[]>(
+        const [users] = await connection.execute<RowDataPacket[]>(
             `SELECT 1 FROM users WHERE username = ?`, 
             [username]
         );
@@ -159,6 +180,12 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
         }
 
         const user = users[0];
+
+
+
+        
+
+
 
         // Verify password
         const passwordMatch = await bcrypt.compare(password, user.password);

@@ -59,7 +59,7 @@ app.use("/api/v1/task", taskRouter);
 app.use("/api/v1/group", groupRouter);
 
 
-const shutdown = async (signal: string) => {
+export const shutdown = async (signal: string) => {
     console.log(`Shutting down`);
     
     try {

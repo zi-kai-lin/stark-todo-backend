@@ -17,8 +17,9 @@ interface TokenValidationResult {
    payload: TokenPayload | null;
 }
 
+
 const JWT_SECRET = getRequiredEnvVar('SECRET_KEY');
-const JWT_EXPIRY = process.env.SECRET_EXPIRATION || '3600'; // seconds
+const JWT_EXPIRY = getRequiredEnvVar("SECRET_EXPIRATION")  || '3600'; // seconds
 
 export const generateToken = (userId: number, username: string): string => {
    const payload: TokenPayload = {
@@ -64,6 +65,8 @@ const parseSecondsToMilliseconds = (seconds: string): number => {
    return value * 1000; // convert to milliseconds
 };
 
+
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 export const cookieConfig = {
@@ -76,9 +79,7 @@ export const cookieConfig = {
 
 
 export const clearAuthCookie = {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: 'strict' as const,
+
     maxAge: 0,  
     path: '/'   
   };
