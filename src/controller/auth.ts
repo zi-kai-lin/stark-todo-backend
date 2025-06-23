@@ -163,6 +163,9 @@ export const login = async (req: Request, res: Response): Promise<Response> => {
             );
         }
 
+
+
+
         // Get user from database
         const [users] = await connection.execute<UserRow[]>(
             `SELECT user_id, username, password FROM users WHERE username = ?`,

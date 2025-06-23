@@ -19,7 +19,10 @@ interface TokenValidationResult {
 
 
 const JWT_SECRET = getRequiredEnvVar('SECRET_KEY');
-const JWT_EXPIRY = getRequiredEnvVar("SECRET_EXPIRATION")  || '3600'; // seconds
+const JWT_EXPIRY = process.env.SECRET_EXPIRATION  || '3600';
+
+
+
 
 export const generateToken = (userId: number, username: string): string => {
    const payload: TokenPayload = {
