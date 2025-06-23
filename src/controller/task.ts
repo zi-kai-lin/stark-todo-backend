@@ -6,6 +6,7 @@ import {
   ErrorCode, 
   HttpStatus 
 } from '../utils/apiResponse';
+import moment from "moment";
 
 export const getTaskById = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -13,7 +14,7 @@ export const getTaskById = async (req: Request, res: Response): Promise<Response
         const taskId = parseInt(req.params.id);
         const category = res.locals.apiCategory;
         
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -94,6 +95,29 @@ export const createTask = async (req: Request, res: Response): Promise<Response>
                 HttpStatus.BAD_REQUEST
             );
         }
+
+        if(dueDate !== undefined && !(moment(dueDate, 'YYYY-MM-DD', true).isValid())){
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.INVALID_FORMAT,
+                "Invalid date format (yyyy-mm-dd)",
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+        if(groupId !== undefined && (isNaN(groupId) || groupId <= 0)){
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.INVALID_FORMAT,
+                "Invalid id format",
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+
+
         
         const task = await TaskModel.createTask({
             description,
@@ -154,7 +178,7 @@ export const updateTask = async (req: Request, res: Response): Promise<Response>
         const category = res.locals.apiCategory;
         
         // Validate taskId
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -190,17 +214,48 @@ export const updateTask = async (req: Request, res: Response): Promise<Response>
             );
         }
         
-        // Validate description if provided
-        if (description !== undefined && (typeof description !== 'string' || description.trim() === '')) {
+        if (description === undefined || (typeof description !== 'string' || description.trim() === '')) {
             return errorResponse(
                 res,
                 category,
                 ErrorCode.INVALID_FORMAT,
-                "Task description must be a non-empty string",
+                "Missing task description",
                 HttpStatus.BAD_REQUEST
             );
         }
-        
+
+        if(dueDate !== undefined && !(moment(dueDate, 'YYYY-MM-DD', true).isValid())){
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.INVALID_FORMAT,
+                "Invalid date format (yyyy-mm-dd)",
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+        if(groupId !== undefined && (isNaN(groupId) || groupId <= 0)){
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.INVALID_FORMAT,
+                "Invalid id format",
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+        if(completed !== undefined && typeof(completed) !== "boolean"){
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.INVALID_FORMAT,
+                "Completion status must be boolean",
+                HttpStatus.BAD_REQUEST
+            );
+        }
+
+
+
         // Call the model function to update the task
         const updatedTask = await TaskModel.updateTask(taskId, userId, {
             description,
@@ -241,15 +296,6 @@ export const updateTask = async (req: Request, res: Response): Promise<Response>
             );
         }
         
-        if (error.message === 'Not in specified group') {
-            return errorResponse(
-                res,
-                category,
-                ErrorCode.PERMISSION_ERROR,
-                "You must be a member of the group to move this task to it",
-                HttpStatus.FORBIDDEN
-            );
-        }
         
         return errorResponse(
             res,
@@ -267,7 +313,7 @@ export const deleteTask = async (req: Request, res: Response): Promise<Response>
         const taskId = parseInt(req.params.id);
         const category = res.locals.apiCategory;
         
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -328,7 +374,7 @@ export const getTaskComments = async (req: Request, res: Response): Promise<Resp
         const taskId = parseInt(req.params.id);
         const category = res.locals.apiCategory;
         
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -389,7 +435,7 @@ export const addTaskComment = async (req: Request, res: Response): Promise<Respo
         const taskId = parseInt(req.params.id);
         const category = res.locals.apiCategory;
         
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -486,7 +532,7 @@ export const deleteTaskComment = async (req: Request, res: Response): Promise<Re
         const targetId = parseInt(req.params.commentId);
         const category = res.locals.apiCategory;
         
-        if (isNaN(targetId)) {
+        if (isNaN(targetId) || targetId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -524,7 +570,7 @@ export const deleteTaskComment = async (req: Request, res: Response): Promise<Re
             );
         }
         
-        if (error.message === 'Insufficient privileges to delete this comment') {
+        if (error.message === 'Insufficient privileges') {
             return errorResponse(
                 res,
                 category,
@@ -560,7 +606,7 @@ export const getAssigneesAndWatchers = async (req: Request, res: Response): Prom
         const taskId = parseInt(req.params.id);
         const category = res.locals.apiCategory;
         
-        if (isNaN(taskId)) {
+        if (isNaN(taskId) || taskId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -629,7 +675,7 @@ export const createAssignOrWatchTask = (type: 'assigned' | 'watcher') => {
             const targetUserId = parseInt(req.params.targetUserId);
             const category = res.locals.apiCategory;
 
-            if (isNaN(taskId) || isNaN(targetUserId)) {
+            if (isNaN(taskId) || taskId <= 0 || isNaN(targetUserId) || targetUserId <= 0) {
                 return errorResponse(
                     res,
                     category,
@@ -718,7 +764,7 @@ export const removeAssignOrWatchTask = (type: 'assigned' | 'watcher') => {
             const targetUserId = parseInt(req.params.targetUserId);
             const category = res.locals.apiCategory;
 
-            if (isNaN(taskId) || isNaN(targetUserId)) {
+            if (isNaN(taskId) || taskId <= 0 || isNaN(targetUserId) || targetUserId <= 0) {
                 return errorResponse(
                     res,
                     category,

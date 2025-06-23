@@ -14,12 +14,12 @@ export const createGroup = async (req: Request, res: Response): Promise<Response
         const category = res.locals.apiCategory;
         const { name, description } = req.body;
         
-        if (!name) {
+        if (!name || name.length < 1 || name.length > 100) {
             return errorResponse(
                 res,
                 category,
                 ErrorCode.INVALID_FORMAT,
-                "Group name is required",
+                "Valid group name must be within 1-100 characters (required)",
                 HttpStatus.BAD_REQUEST
             );
         }
@@ -69,7 +69,7 @@ export const deleteGroup = async (req: Request, res: Response): Promise<Response
         const category = res.locals.apiCategory;
         const groupId = parseInt(req.params.id);  
         
-        if (isNaN(groupId)) {
+        if (isNaN(groupId) || groupId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -130,7 +130,7 @@ export const addUserToGroup = async (req: Request, res: Response): Promise<Respo
         const groupId = parseInt(req.params.id);  
         const targetUserId = parseInt(req.params.targetUserId); 
         
-        if (isNaN(groupId) || isNaN(targetUserId)) {
+        if (isNaN(groupId) || groupId <= 0 || isNaN(targetUserId) || targetUserId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -201,7 +201,7 @@ export const removeUserFromGroup = async (req: Request, res: Response): Promise<
         const groupId = parseInt(req.params.id);  
         const targetUserId = parseInt(req.params.targetUserId);  
         
-        if (isNaN(groupId) || isNaN(targetUserId)) {
+        if (isNaN(groupId) || groupId <= 0 || isNaN(targetUserId) || targetUserId <= 0) {
             return errorResponse(
                 res,
                 category,
@@ -234,6 +234,16 @@ export const removeUserFromGroup = async (req: Request, res: Response): Promise<
             );
         }
         
+        if (error.message === 'Cannot remove group creator') {
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.PERMISSION_ERROR,
+                "Insufficient privileges",
+                HttpStatus.FORBIDDEN
+            );
+        }
+
         if (error.message === 'Insufficient privileges') {
             return errorResponse(
                 res,

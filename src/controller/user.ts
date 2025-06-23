@@ -7,6 +7,7 @@ import {
   ErrorCode, 
   HttpStatus 
 } from '../utils/apiResponse';
+import moment from 'moment';
 
 export const getAvailableGroups = async (req: Request, res: Response): Promise<Response> => {
     try {
@@ -99,7 +100,50 @@ export const getAvailableTasks = async (req: Request, res: Response): Promise<Re
                     HttpStatus.BAD_REQUEST
                 );
             }
+
+
+            const groupId = parseInt(requestGroupOptions.groupId);
+            if(isNaN(groupId) || groupId <= 0){
+                return errorResponse(
+                    res,
+                    category,
+                    ErrorCode.INVALID_FORMAT,
+                    "Valid group id is required",
+                    HttpStatus.BAD_REQUEST
+                );
+            }
+
+            if(requestGroupOptions.ownerFilter !== undefined){
+                const ownerFilter = parseInt(requestGroupOptions.ownerFilter);
+
+                if(isNaN(ownerFilter) || ownerFilter <= 0){
+                    return errorResponse(
+                        res,
+                        category,
+                        ErrorCode.INVALID_FORMAT,
+                        "Invalid Owner Filter",
+                        HttpStatus.BAD_REQUEST
+                    );
+                }
+            }
+
+
+            if(requestGroupOptions.assignedFilter !== undefined &&  typeof requestGroupOptions.assignedFilter !== "boolean"){
+                    return errorResponse(
+                        res,
+                        category,
+                        ErrorCode.INVALID_FORMAT,
+                        "Assigned Value must be boolean",
+                        HttpStatus.BAD_REQUEST
+                    );
+
+                }
+                
             
+            
+            
+
+
             // Create the groupOptions object with the correct structure
             groupOptions = {
                 groupId: requestGroupOptions.groupId,
@@ -151,7 +195,7 @@ export const getAvailableTasks = async (req: Request, res: Response): Promise<Re
         }
         
         // Validate date format if provided
-        if (dateOption && !/^\d{4}-\d{2}-\d{2}$/.test(dateOption)) {
+        if (dateOption && !moment(dateOption, 'YYYY-MM-DD', true).isValid()) {
             return errorResponse(
                 res,
                 category,
