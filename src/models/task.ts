@@ -178,9 +178,10 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
         `DESCRIBE tasks`
       );
 
-      // Check if parent task exists when parent id is specified
+      // Sub task contains parentId
       if (taskData.parentId) {
-        // Get parent task details to verify it exists
+
+        /* Obtain parent information */
         const [parentRows] = await connection.execute<ParentTaskRow[]>(
           `SELECT task_id, owner_id, group_id 
            FROM tasks
@@ -194,18 +195,27 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
         
         const parentTask = parentRows[0];
         
-        // Check if user is owner of the parent task or a member of the parent's group
-        const isOwner = await checkTaskPrivilege('owner', taskData.parentId, taskData.ownerId);
-        
-        if (!isOwner) {
-          // If not owner, check if user is a member of the group containing the parent task
-          const isMember = await checkTaskPrivilege('member', taskData.parentId, taskData.ownerId);
-          
-          if (!isMember) {
-            throw new Error('Insufficient privileges');
-          }
+        /* Check group membership group(require member), nonGroup require owner*/
+        if(parentTask.group_id !== null){
+
+            const isMember = await checkTaskPrivilege('member', taskData.parentId, taskData.ownerId);
+            if(!isMember){
+                throw new Error("Insufficient privileges"); 
+            }
+
+        }else{
+
+            const isOwner = await checkTaskPrivilege("owner", taskData.parentId, taskData.ownerId);
+            if(!isOwner){
+
+                throw new Error("Insufficient privileges");
+
+            }
+
+
+
         }
-        
+
     
         // Inherit child task with parent task group id, override user input if parent id and group id are both provided
         if (parentTask.group_id !== null) {
@@ -216,12 +226,12 @@ export const createTask = async (taskData: Omit<Task, 'taskId' | 'dateCreated'>)
         }
       } 
       // If no parent (this is a parent/standalone task), check group permissions as before
-      else if (taskData.groupId) {
-        // Check if user is a member of the specified group
-        const isMember = await isGroupMember(taskData.groupId, taskData.ownerId);
-        
-        if (!isMember) {
-          throw new Error('Insufficient privileges');
+      else {
+        if (taskData.groupId) {
+          const isMember = await isGroupMember(taskData.groupId, taskData.ownerId);
+          if (!isMember) {
+            throw new Error('Insufficient privileges');
+          }
         }
       }
       
@@ -317,9 +327,21 @@ export const updateTask = async (
         
         const task = taskRows[0];
         
-        // Check if owner
-        const isOwner = await checkTaskPrivilege('owner', taskId, userId);
-        
+        // Initial permission check based on current group status
+        if (task.group_id !== null) {
+            // Task is in a group - check membership
+            const isMember = await checkTaskPrivilege('member', taskId, userId);
+            if (!isMember) {
+                throw new Error('Insufficient privileges');
+            }
+        } else {
+            // Task not in group - check ownership
+            const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+            if (!isOwner) {
+                throw new Error('Insufficient privileges');
+            }
+        }
+
         /* check if child task */
         const isChildTask = task.parent_id !== null;
         
@@ -328,27 +350,38 @@ export const updateTask = async (
             throw new Error('Insufficient privileges');
         }
         
-        // Check if task is being updated to another group (when updated groupId is not the same with current group id)
         if (updateData.groupId !== undefined && updateData.groupId !== task.group_id) {
-            // If trying to move task between groups or add/remove from a group
-            
-            /* Owner or admin privilege required for group change of task */
-            if (!isOwner) {
-                // If not owner, check if user is an admin in the current group
-                // (Only admins can move tasks between groups)
-                if (task.group_id) {
-                    const isAdmin = await checkTaskPrivilege('admin', taskId, userId);
-                    if (!isAdmin) {
-                        throw new Error('Insufficient privileges');
-                    }
-                } else {
-                    // If task is not in a group and user is not owner, they can't move it
+
+
+            /* Adding group for task, require current task ownership and target Group membership */
+            if (task.group_id === null && updateData.groupId !== null) {
+
+
+                const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+                if (!isOwner) {
                     throw new Error('Insufficient privileges');
                 }
-            }
+                
+                const [newGroupRows] = await connection.execute<RowDataPacket[]>(
+                    `SELECT 1 FROM group_members 
+                     WHERE group_id = ? AND user_id = ?`,
+                    [updateData.groupId, userId]
+                );
+                
+                if (newGroupRows.length === 0) {
+                    throw new Error('Insufficient privileges');
+                }
+            } 
+            /* Changing existing group to another require current user to be an admin */
+            else if (task.group_id !== null && updateData.groupId !== null) {
+                // groupId to different groupId: require admin in current group
+                const isAdmin = await checkTaskPrivilege('admin', taskId, userId);
             
-            // Verify user is a member of the target group if setting initial group
-            if (updateData.groupId !== null) {
+                if (!isAdmin) {
+                    throw new Error('Insufficient privileges');
+                }
+            
+               
                 const [newGroupRows] = await connection.execute<RowDataPacket[]>(
                     `SELECT 1 FROM group_members 
                      WHERE group_id = ? AND user_id = ?`,
@@ -359,17 +392,28 @@ export const updateTask = async (
                     throw new Error('Insufficient privileges');
                 }
             }
-        } else {
-            // Regular update (not changing groups) - check member privileges
-            if (!isOwner) {
-                // If not owner, check if user is a member of the task's group
+            
+
+
+            /* Setting target task to no group */
+            else if (task.group_id !== null && updateData.groupId === null) {
+
+
+                const isAdmin = await checkTaskPrivilege('admin', taskId, userId);
+                const isOwner = await checkTaskPrivilege('owner', taskId, userId);
                 const isMember = await checkTaskPrivilege('member', taskId, userId);
                 
-                if (!isMember) {
+                if (!isAdmin && !(isOwner && isMember)) {
                     throw new Error('Insufficient privileges');
                 }
             }
         }
+
+
+
+
+
+
         
         // Build update query dynamically based on provided fields
         let updateQuery = 'UPDATE tasks SET ';
@@ -543,18 +587,21 @@ export const deleteTask = async (
         const task = taskRows[0];
         const isChildTask = task.parent_id !== null;
         
-        // Check if owner
-        const isOwner = await checkTaskPrivilege('owner', taskId, userId);
-        
-        if (!isOwner) {
-            // Check if member
+        // Check permission based on task's group association
+        if (task.group_id !== null) {
+            // Task has group - check membership
             const isMember = await checkTaskPrivilege('member', taskId, userId);
-            
             if (!isMember) {
                 throw new Error('Insufficient privileges');
             }
+        } else {
+            // Task has no group - check ownership
+            const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+            if (!isOwner) {
+                throw new Error('Insufficient privileges');
+            }
         }
-        
+
         // If this is a parent task, delete all child tasks first
         if (!isChildTask) {
 
@@ -644,20 +691,22 @@ export const getTaskById = async (
         
         const taskData = taskRows[0];
         
-        // Check if user has permission to view this task
-        const isOwner = taskData.owner_id === userId;
-        let hasPermission = isOwner;
-        
-        // If not owner, check if user is a member of the task's group
-        if (!hasPermission && taskData.group_id) {
+        // Check permission based on task's group association
+        if (taskData.group_id !== null) {
+            // Task has group - check membership
             const isMember = await isGroupMember(taskData.group_id, userId);
-            hasPermission = isMember;
+            if (!isMember) {
+                throw new Error('Insufficient privileges');
+            }
+        } else {
+            // Task has no group - check ownership
+            const isOwner = taskData.owner_id === userId;
+            if (!isOwner) {
+                throw new Error('Insufficient privileges');
+            }
         }
-        
-        if (!hasPermission) {
-            throw new Error('Insufficient privileges');
-        }
-        
+
+
         // Map database row to Task interface
         const task: Task = {
             taskId: taskData.task_id,
@@ -741,12 +790,16 @@ export const addTaskComment = async (
         const task = taskRows[0];
         
         // Check if user has permission to comment (owner or member)
-        const isOwner = await checkTaskPrivilege('owner', taskId, userId);
-        
-        if (!isOwner) {
+        if (task.group_id !== null) {
+            // Task has group - check membership
             const isMember = await checkTaskPrivilege('member', taskId, userId);
-            
             if (!isMember) {
+                throw new Error('Insufficient privileges to comment on this task');
+            }
+        } else {
+            // Task has no group - check ownership
+            const isOwner = await checkTaskPrivilege('owner', taskId, userId);
+            if (!isOwner) {
                 throw new Error('Insufficient privileges to comment on this task');
             }
         }
@@ -824,25 +877,31 @@ export const deleteTaskComment = async (
         /* Task owner can delete any comment under their task */
         /* Group admin can delete any comment inside the group  */
 
-        const isCommentCreator = comment.user_id === userId;
-        let hasPermission = isCommentCreator;
-        
-        if (!hasPermission) {
-            // Check if user is the task owner
-            const isTaskOwner = comment.owner_id === userId;
-            hasPermission = isTaskOwner;
+        // Check permission based on task's group association
+        if (comment.group_id !== null) {
+            // Task has group - must be group member first
+            const isMember = await isGroupMember(comment.group_id, userId);
+            if (!isMember) {
+                throw new Error('Insufficient privileges');
+            }
             
-            // If not task owner, check if user is a group admin (if task is in a group)
-            if (!hasPermission && comment.group_id) {
-                const isAdmin = await isGroupMember(comment.group_id, userId, true);
-                hasPermission = isAdmin;
+            // Then check specific permissions within group
+            const isCommentCreator = comment.user_id === userId;
+            const isTaskOwner = comment.owner_id === userId;
+            const isAdmin = await isGroupMember(comment.group_id, userId, true);
+            
+            if (!(isCommentCreator || isTaskOwner || isAdmin)) {
+                throw new Error('Insufficient privileges');
+            }
+        } else {
+            // Task has no group - only task owner can delete comments
+            const isTaskOwner = comment.owner_id === userId;
+            if (!isTaskOwner) {
+                throw new Error('Insufficient privileges');
             }
         }
-        
-        if (!hasPermission) {
-            throw new Error('Insufficient privileges to delete this comment');
-        }
-        
+
+
         // Delete the comment
         const [result] = await connection.execute<ResultSetHeader>(
             `DELETE FROM task_comments WHERE comment_id = ?`,
@@ -896,18 +955,20 @@ export const getTaskComments = async (
         
         const task = taskRows[0];
         
-        // Check if user has permission to view comments (owner or member)
-        const isOwner = task.owner_id === userId;
-        let hasPermission = isOwner;
         
-        // If not owner, check if user is a member of the task's group
-        if (!hasPermission && task.group_id) {
+        // Check permission based on task's group association
+        if (task.group_id !== null) {
+            // Task has group - check membership
             const isMember = await isGroupMember(task.group_id, userId);
-            hasPermission = isMember;
-        }
-        
-        if (!hasPermission) {
-            throw new Error('Insufficient privileges');
+            if (!isMember) {
+                throw new Error('Insufficient privileges');
+            }
+        } else {
+            // Task has no group - check ownership
+            const isOwner = task.owner_id === userId;
+            if (!isOwner) {
+                throw new Error('Insufficient privileges');
+            }
         }
         
         // Get all comments for this task including username
@@ -974,27 +1035,44 @@ export const assignOrWatchTask = async (
         if (taskRows.length === 0) {
             throw new Error('Task not found');
         }
+
+        // Check if the target user exists
+        const [userRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT user_id FROM users WHERE user_id = ?`,
+            [targetUserId]
+        );
         
+        if (userRows.length === 0) {
+            throw new Error('User to add does not exist');
+        }
+
         const task = taskRows[0];
         
         // Determine if self-addition or adding others
         const isSelfAddition = targetUserId === currentUserId;
         
         if (isSelfAddition) {
-            // For self-addition, check if user is owner or member of the group
-            const isOwner = task.owner_id === currentUserId;
-            let hasPermission = isOwner;
-            
-            if (!hasPermission && task.group_id) {
+            // For self-addition, check permission based on task's group association
+            if (task.group_id !== null) {
+                // Task has group - check membership
                 const isMember = await isGroupMember(task.group_id, currentUserId);
-                hasPermission = isMember;
-            }
-            
-            if (!hasPermission) {
-                throw new Error(`Insufficient privileges`);
+                if (!isMember) {
+                    throw new Error(`Insufficient privileges`);
+                }
+            } else {
+                // Task has no group - check ownership
+                const isOwner = task.owner_id === currentUserId;
+                if (!isOwner) {
+                    throw new Error(`Insufficient privileges`);
+                }
             }
         } else {
             // Adding other require to be owner, parent task owner, or group admin
+            if (task.group_id === null) {
+                throw new Error(`Insufficient privileges`);
+            }
+            
+            // Check privileges: owner, parent task owner, or group admin
             const isOwner = task.owner_id === currentUserId;
             let hasPermission = isOwner;
             
@@ -1020,15 +1098,7 @@ export const assignOrWatchTask = async (
                 throw new Error(`Insufficient privileges`);
             }
             
-            // Check if the target user exists
-            const [userRows] = await connection.execute<RowDataPacket[]>(
-                `SELECT user_id FROM users WHERE user_id = ?`,
-                [targetUserId]
-            );
-            
-            if (userRows.length === 0) {
-                throw new Error('User to add does not exist');
-            }
+
             
             // If task is in a group, verify the target user is a member of that group
             if (task.group_id) {
@@ -1110,7 +1180,18 @@ export const removeAssignOrWatchTask = async (
         // Determine if self-removal or removing others
         const isSelfRemoval = targetUserId === currentUserId;
         if (!isSelfRemoval) {
-            // For removing others, need to be owner, parent owner, or group admin
+            // For removing others - only allowed if task has group
+            if (task.group_id === null) {
+                throw new Error(`Insufficient privileges`);
+            }
+            
+            // Must be group member first
+            const isMember = await isGroupMember(task.group_id, currentUserId);
+            if (!isMember) {
+                throw new Error(`Insufficient privileges`);
+            }
+            
+            // Then check specific privileges: owner, parent owner, or group admin
             const isOwner = task.owner_id === currentUserId;
             let hasPermission = isOwner;
             
@@ -1136,18 +1217,19 @@ export const removeAssignOrWatchTask = async (
                 throw new Error(`Insufficient privileges`);
             }
         } else {
-            // For self-removal, check if user is owner or member of the task's group
-            const isOwner = task.owner_id === currentUserId;
-            let hasPermission = isOwner;
-            
-            // If not owner, check if user is a member of the task's group
-            if (!hasPermission && task.group_id) {
+            // For self-removal, check permission based on task's group association
+            if (task.group_id !== null) {
+                // Task has group - check membership
                 const isMember = await isGroupMember(task.group_id, currentUserId);
-                hasPermission = isMember;
-            }
-            
-            if (!hasPermission) {
-                throw new Error(`Insufficient privileges`);
+                if (!isMember) {
+                    throw new Error(`Insufficient privileges`);
+                }
+            } else {
+                // Task has no group - check ownership
+                const isOwner = task.owner_id === currentUserId;
+                if (!isOwner) {
+                    throw new Error(`Insufficient privileges`);
+                }
             }
         }
         
@@ -1209,18 +1291,19 @@ export const getAssigneesAndWatchers = async ( taskId: number, userId: number) :
             
             const task = taskRows[0];
             
-            // Check if user has permission to view task users (owner or member)
-            const isOwner = task.owner_id === userId;
-            let hasPermission = isOwner;
-            
-            // If not owner, check if user is a member of the task's group
-            if (!hasPermission && task.group_id) {
+            // Check permission based on task's group association
+            if (task.group_id !== null) {
+                // Task has group - check membership
                 const isMember = await isGroupMember(task.group_id, userId);
-                hasPermission = isMember;
-            }
-            
-            if (!hasPermission) {
-                throw new Error('Insufficient privileges');
+                if (!isMember) {
+                    throw new Error('Insufficient privileges');
+                }
+            } else {
+                // Task has no group - check ownership
+                const isOwner = task.owner_id === userId;
+                if (!isOwner) {
+                    throw new Error('Insufficient privileges');
+                }
             }
             
             // Get assigned users with usernames

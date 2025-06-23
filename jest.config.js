@@ -10,7 +10,8 @@ module.exports = {
 
   testMatch: [
     '**/tests/unit/models/task.test.ts',  // Run task tests first
-    '**/tests/unit/models/user.test.ts'  // Then user tests
+    '**/tests/unit/models/user.test.ts',
+    '**/tests/unit/models/group.test.ts'  // Then user tests
   ],
   
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
@@ -18,5 +19,8 @@ module.exports = {
   clearMocks: true,
   restoreMocks: true,
   
-  testTimeout: 30000
+  testTimeout: 30000,
+
+
+ 
 };

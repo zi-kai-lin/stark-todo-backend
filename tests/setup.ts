@@ -10,7 +10,6 @@ dotenv.config(envPath);
 
 
 
-jest.setTimeout(30000); 
 
 // Global setup - run REAL database initialization once before all tests
 beforeAll(async () => {

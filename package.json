@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "NODE_ENV=testing jest --verbose",
+    "test": "NODE_ENV=testing jest",
     "test:watch": "NODE_ENV=testing jest --watch",
     "test:coverage": "NODE_ENV=testing jest --coverage",
     "test:verbose": "NODE_ENV=testing jest --verbose",
@@ -29,6 +29,7 @@
     "@types/node": "^24.0.3",
     "jest": "^30.0.2",
     "jest-mock-extended": "^4.0.0",
+    "jest-progress-bar-reporter": "^1.0.25",
     "nodemon": "^3.1.10",
     "ts-jest": "^29.4.0",
     "ts-node": "^10.9.2",

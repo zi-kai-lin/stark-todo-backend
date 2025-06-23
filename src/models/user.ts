@@ -16,7 +16,10 @@ export interface UserBasic{
 
 
 
+/* 
+    依據現在的使用者，存取 已經加入的分享團體 
 
+*/
 export const getGroupsByUserId = async (userId: number): Promise<Group[]> => {
     let connection: PoolConnection | undefined;
     
@@ -131,29 +134,45 @@ export const getAvailableTasks = async (
                 SELECT t.task_id, t.description, t.due_date, t.owner_id, 
                        t.group_id, t.parent_id, t.completed, t.date_created
                 FROM tasks t
-                WHERE t.owner_id = ? AND t.parent_id IS NULL
+                WHERE t.owner_id = ? AND t.parent_id IS NULL AND t.group_id IS NULL
             `;
             queryParams.push(userId);
         } 
         else if (mode === 'assigned') {
             baseQuery = `
-                SELECT t.task_id, t.description, t.due_date, t.owner_id, 
-                       t.group_id, t.parent_id, t.completed, t.date_created
-                FROM tasks t
-                JOIN task_assigned ta ON t.task_id = ta.task_id
-                WHERE ta.user_id = ? AND t.parent_id IS NULL
-            `;
-            queryParams.push(userId);
+            SELECT t.task_id, t.description, t.due_date, t.owner_id, 
+                   t.group_id, t.parent_id, t.completed, t.date_created
+            FROM tasks t
+            JOIN task_assigned ta ON t.task_id = ta.task_id
+            WHERE ta.user_id = ? AND t.parent_id IS NULL 
+            AND (
+                (t.group_id IS NULL AND t.owner_id = ?) 
+                OR 
+                (t.group_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM group_members gm 
+                    WHERE gm.group_id = t.group_id AND gm.user_id = ?
+                ))
+            )
+        `;
+        queryParams.push(userId, userId, userId);
         }
         else if (mode === 'watching') {
             baseQuery = `
-                SELECT t.task_id, t.description, t.due_date, t.owner_id, 
-                       t.group_id, t.parent_id, t.completed, t.date_created
-                FROM tasks t
-                JOIN task_watchers tw ON t.task_id = tw.task_id
-                WHERE tw.user_id = ? AND t.parent_id IS NULL
-            `;
-            queryParams.push(userId);
+            SELECT t.task_id, t.description, t.due_date, t.owner_id, 
+                   t.group_id, t.parent_id, t.completed, t.date_created
+            FROM tasks t
+            JOIN task_watchers tw ON t.task_id = tw.task_id
+            WHERE tw.user_id = ? AND t.parent_id IS NULL 
+            AND (
+                (t.group_id IS NULL AND t.owner_id = ?) 
+                OR 
+                (t.group_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM group_members gm 
+                    WHERE gm.group_id = t.group_id AND gm.user_id = ?
+                ))
+            )
+        `;
+        queryParams.push(userId, userId, userId);
         }
         else if (mode === 'group') {
             // Validate group mode requirements
@@ -205,6 +224,18 @@ export const getAvailableTasks = async (
             
             // Add owner filter if specified (after assigned filter)
             if (groupOptions.ownerFilter !== undefined) {
+
+
+                const [ownerMemberRows] = await connection.execute<RowDataPacket[]>(
+                    `SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?`,
+                    [groupOptions.groupId, groupOptions.ownerFilter]
+                );
+                
+                if (ownerMemberRows.length === 0) {
+                    return []
+                }
+
+
                 baseQuery += ` AND t.owner_id = ?`;
                 queryParams.push(groupOptions.ownerFilter);
             }

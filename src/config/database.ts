@@ -90,7 +90,7 @@ export async function initializeDatabase(): Promise<void> {
             group_id INT NULL,
             FOREIGN KEY (parent_id) REFERENCES tasks(task_id) ON DELETE CASCADE,
             FOREIGN KEY (owner_id) REFERENCES users(user_id) ON DELETE CASCADE,
-            FOREIGN KEY (group_id) REFERENCES task_groups(group_id) ON DELETE SET NULL,
+            FOREIGN KEY (group_id) REFERENCES task_groups(group_id) ON DELETE CASCADE,
             INDEX idx_completed (completed),
             INDEX idx_due_date (due_date),
             INDEX idx_owner_id (owner_id),

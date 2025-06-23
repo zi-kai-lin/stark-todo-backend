@@ -14,9 +14,13 @@ import {
 
  
 
-import { getAvailableTasks } from '../../../src/models/user';
+import { 
+  getAvailableTasks,
+  getGroupsByUserId
+} from '../../../src/models/user';
 import { pool } from '../../../src/config/database';
 
+import { ResultSetHeader } from "mysql2/promise"
 
 describe('GetAvailableTasks Integration Tests', () => {
   
@@ -91,11 +95,14 @@ describe('GetAvailableTasks Integration Tests', () => {
     describe('Assigned Mode', () => {
       describe('Success', () => {
         it('should retrieve all tasks that are assigned to the current user', async () => {
+
+
+          
           // Create tasks owned by different users
           const task1 = await createTask({
             description: 'Task 1 for assignment',
             dueDate: new Date('2024-12-31'),
-            ownerId: 2,
+            ownerId: 1,
             groupId: null,
             parentId: null,
             completed: false
@@ -120,7 +127,7 @@ describe('GetAvailableTasks Integration Tests', () => {
           });
 
           // Assign tasks to user 1
-          await assignOrWatchTask(task1.taskId!, 1, 2, 'assigned');
+          await assignOrWatchTask(task1.taskId!, 1, 1, 'assigned');
           await assignOrWatchTask(task2.taskId!, 1, 1, 'assigned');
           // Don't assign task3
 
@@ -131,7 +138,6 @@ describe('GetAvailableTasks Integration Tests', () => {
           expect(result).toHaveLength(2);
           expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task1.taskId)).toBe(true);
           expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task2.taskId)).toBe(true);
-          expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task3.taskId)).toBe(false);
         });
       });
     });
@@ -143,7 +149,7 @@ describe('GetAvailableTasks Integration Tests', () => {
           const task1 = await createTask({
             description: 'Task 1 for watching',
             dueDate: new Date('2024-12-31'),
-            ownerId: 2,
+            ownerId: 1,
             groupId: null,
             parentId: null,
             completed: false
@@ -168,7 +174,7 @@ describe('GetAvailableTasks Integration Tests', () => {
           });
 
           // Add watchers to tasks
-          await assignOrWatchTask(task1.taskId!, 1, 2, 'watcher');
+          await assignOrWatchTask(task1.taskId!, 1, 1, 'watcher');
           await assignOrWatchTask(task2.taskId!, 1, 1, 'watcher');
           // Don't add watcher to task3
 
@@ -179,7 +185,6 @@ describe('GetAvailableTasks Integration Tests', () => {
           expect(result).toHaveLength(2);
           expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task1.taskId)).toBe(true);
           expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task2.taskId)).toBe(true);
-          expect(result.some(taskWithChildren => taskWithChildren.task.taskId === task3.taskId)).toBe(false);
         });
       });
     });
@@ -1588,4 +1593,406 @@ describe('GetAvailableTasks Integration Tests', () => {
       });
     });
   });
+
+  describe('Update Changes', () => {
+    it('should NOT retrieve tasks with group_id even if owned by user', async () => {
+      // Create personal task (no group)
+      const personalTask = await createTask({
+        description: 'Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Create group task owned by same user
+      await createTask({
+        description: 'Group Task Owned by User',
+        dueDate: new Date('2024-11-15'),
+        ownerId: 1,
+        groupId: 1, // Has group_id
+        parentId: null,
+        completed: false
+      });
+  
+      const result = await getAvailableTasks(1, 'personal');
+  
+      // Should only return personal task, not group task
+      expect(result).toHaveLength(1);
+      expect(result[0].task.taskId).toBe(personalTask.taskId);
+      expect(result[0].task.groupId).toBeNull();
+    });
+  
+
+  
+    it('should retrieve group tasks where user is assigned AND is a group member', async () => {
+      // Add users to group 1
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']  // Only add user 2
+        );
+      } finally {
+        connection.release();
+      }
+  
+      // Create group task
+      const groupTask = await createTask({
+        description: 'Group Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 2,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      });
+  
+      // Assign task to user 1 (who IS in group 1)
+      await assignOrWatchTask(groupTask.taskId!, 1, 2, 'assigned');
+  
+      const result = await getAvailableTasks(1, 'assigned');
+  
+      // Should return the task - user 1 is assigned AND group member
+      expect(result).toHaveLength(1);
+      expect(result[0].task.taskId).toBe(groupTask.taskId);
+    });
+  
+    it('should retrieve non-group tasks where user is assigned and owns the task', async () => {
+      // Create non-group task owned by user 1
+      const personalTask = await createTask({
+        description: 'Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Assign task to user 1 (self-assignment)
+      await assignOrWatchTask(personalTask.taskId!, 1, 1, 'assigned');
+  
+      const result = await getAvailableTasks(1, 'assigned');
+  
+      // Should return the task - user owns non-group task
+      expect(result).toHaveLength(1);
+      expect(result[0].task.taskId).toBe(personalTask.taskId);
+    });
+  
+
+    it('should handle corrupted data: filter out invalid assigned non-group tasks', async () => {
+      // Create non-group task owned by user 2
+      const otherPersonalTask = await createTask({
+        description: 'Other Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 2,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Simulate data corruption by directly inserting invalid assignment
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_assigned (task_id, user_id) VALUES (?, ?)',
+          [otherPersonalTask.taskId, 1]
+        );
+      } finally {
+        connection.release();
+      }
+  
+      const result = await getAvailableTasks(1, 'assigned');
+  
+      // Should NOT return the task - getAvailableTasks should filter corrupted data
+      expect(result).toHaveLength(0);
+    });
+  
+    it('should retrieve non-group tasks where user is watching and owns the task', async () => {
+      // Create non-group task owned by user 1
+      const personalTask = await createTask({
+        description: 'Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Add user 1 as watcher (self-watching)
+      await assignOrWatchTask(personalTask.taskId!, 1, 1, 'watcher');
+  
+      const result = await getAvailableTasks(1, 'watching');
+  
+      // Should return the task - user owns non-group task
+      expect(result).toHaveLength(1);
+      expect(result[0].task.taskId).toBe(personalTask.taskId);
+    });
+  
+    it('should prevent watching of non-group tasks by users who do not own them', async () => {
+      // Create non-group task owned by user 2
+      const otherPersonalTask = await createTask({
+        description: 'Other Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 2,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Try to add user 1 as watcher (who doesn't own it)
+      // This should FAIL because non-group tasks can only be watched by owner
+      await expect(
+        assignOrWatchTask(otherPersonalTask.taskId!, 1, 2, 'watcher')
+      ).rejects.toThrow('Insufficient privileges');
+  
+      const result = await getAvailableTasks(1, 'watching');
+  
+      // Should NOT return any tasks - watcher assignment was prevented
+      expect(result).toHaveLength(0);
+    });
+  
+    it('should handle corrupted data: filter out invalid watched non-group tasks', async () => {
+      // Create non-group task owned by user 2
+      const otherPersonalTask = await createTask({
+        description: 'Other Personal Task',
+        dueDate: new Date('2024-12-31'),
+        ownerId: 2,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+  
+      // Simulate data corruption by directly inserting invalid watcher
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_watchers (task_id, user_id) VALUES (?, ?)',
+          [otherPersonalTask.taskId, 1]
+        );
+      } finally {
+        connection.release();
+      }
+  
+      const result = await getAvailableTasks(1, 'watching');
+  
+      // Should NOT return the task - getAvailableTasks should filter corrupted data
+      expect(result).toHaveLength(0);
+    });
+  });
+
+});
+
+
+// Import statement should be added at the top of your test file
+// import { ResultSetHeader } from 'mysql2/promise';
+
+describe('getGroupsByUserId', () => {
+
+
+  beforeEach(async () => {
+    // Setup test database
+    await cleanupDatabase();
+    await setupTestData();
+  });
+
+  afterAll(async () => {
+    // Final cleanup
+    await cleanupDatabase();
+  });
+
+  describe('Success', () => {
+    it('should retrieve groups for valid userId', async () => {
+      // User 1 should already be in group 1 as admin from setup
+      const result = await getGroupsByUserId(1);
+      
+      expect(result).toBeInstanceOf(Array);
+      expect(result.length).toBeGreaterThan(0);
+      
+      // Check structure of returned groups
+      const group = result[0];
+      expect(group).toHaveProperty('groupId');
+      expect(group).toHaveProperty('name');
+      expect(group).toHaveProperty('description');
+      expect(group).toHaveProperty('createdBy');
+      expect(group).toHaveProperty('createdAt');
+      expect(group).toHaveProperty('role');
+      
+      // Verify the user's role is included
+      expect(['admin', 'member']).toContain(group.role);
+    });
+
+    it('should return empty array when user has no groups', async () => {
+      // Create a new user who isn't in any groups
+      const connection = await pool.getConnection();
+      let newUserId;
+      
+      try {
+        const [result] = await connection.execute<ResultSetHeader>(
+          'INSERT INTO users (username, password) VALUES (?, ?)',
+          ['isolateduser', 'hashedpassword']
+        );
+        newUserId = result.insertId;
+      } finally {
+        connection.release();
+      }
+
+      const groups = await getGroupsByUserId(newUserId);
+      
+      expect(groups).toBeInstanceOf(Array);
+      expect(groups).toHaveLength(0);
+    });
+
+    it('should include user role for each group', async () => {
+      // Add user 1 to multiple groups with different roles
+      const connection = await pool.getConnection();
+      
+      try {
+        // Create additional group
+        const [groupResult] = await connection.execute<ResultSetHeader>(
+          'INSERT INTO task_groups (name, description, created_by) VALUES (?, ?, ?)',
+          ['Test Group 2', 'Second test group', 1]
+        );
+        const group2Id = groupResult.insertId;
+        
+        // Add user 1 as member to the new group
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [group2Id, 1, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+
+      const groups = await getGroupsByUserId(1);
+      
+      expect(groups.length).toBeGreaterThanOrEqual(2);
+      
+      // Check that roles are present and valid
+      groups.forEach(group => {
+        expect(group.role).toBeDefined();
+        expect(['admin', 'member']).toContain(group.role);
+      });
+      
+      // Should have at least one admin role (from group 1) and one member role (from group 2)
+      const roles = groups.map(g => g.role);
+      expect(roles).toContain('admin');
+      expect(roles).toContain('member');
+    });
+
+    it('should return groups sorted by created_at DESC', async () => {
+      const connection = await pool.getConnection();
+      
+      try {
+        // Create multiple groups with delays to ensure different timestamps
+        const [group1Result] = await connection.execute<ResultSetHeader>(
+          'INSERT INTO task_groups (name, description, created_by) VALUES (?, ?, ?)',
+          ['Older Group', 'Created first', 1]
+        );
+        const olderGroupId = group1Result.insertId;
+        
+        await new Promise(resolve => setTimeout(resolve, 1100)); // 1.1 second delay
+        
+        const [group2Result] = await connection.execute<ResultSetHeader>(
+          'INSERT INTO task_groups (name, description, created_by) VALUES (?, ?, ?)',
+          ['Newer Group', 'Created second', 1]
+        );
+        const newerGroupId = group2Result.insertId;
+        
+        // Add user 1 to both groups
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [olderGroupId, 1, 'admin']
+        );
+        
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [newerGroupId, 1, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+
+      const groups = await getGroupsByUserId(1);
+      
+      expect(groups.length).toBeGreaterThanOrEqual(2);
+      
+      // Verify sorting by created_at DESC (newest first)
+      for (let i = 0; i < groups.length - 1; i++) {
+        const currentGroupTime = new Date(groups[i].createdAt).getTime();
+        const nextGroupTime = new Date(groups[i + 1].createdAt).getTime();
+        expect(currentGroupTime >= nextGroupTime).toBe(true);
+      }
+      
+      // Verify the newest group appears first
+      expect(groups[0].name).toBe('Newer Group');
+    });
+
+    it('should handle groups with null descriptions', async () => {
+      const connection = await pool.getConnection();
+      
+      try {
+        // Create group with null description
+        const [groupResult] = await connection.execute<ResultSetHeader>(
+          'INSERT INTO task_groups (name, description, created_by) VALUES (?, ?, ?)',
+          ['No Description Group', null, 1]
+        );
+        const groupId = groupResult.insertId;
+        
+        // Add user 1 to the group
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [groupId, 1, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+
+      const groups = await getGroupsByUserId(1);
+      
+      // Find the group with null description
+      const nullDescGroup = groups.find(g => g.name === 'No Description Group');
+      expect(nullDescGroup).toBeDefined();
+      expect(nullDescGroup!.description).toBeNull();
+      
+      // Verify other properties are still present
+      expect(nullDescGroup!.groupId).toBeDefined();
+      expect(nullDescGroup!.name).toBe('No Description Group');
+      expect(nullDescGroup!.createdBy).toBe(1);
+      expect(nullDescGroup!.createdAt).toBeDefined();
+      expect(nullDescGroup!.role).toBe('admin');
+    });
+  });
+
+  describe('Failure', () => {
+    it('should throw error when user doesn\'t exist', async () => {
+      const nonExistentUserId = 99999;
+      
+      await expect(getGroupsByUserId(nonExistentUserId))
+        .rejects
+        .toThrow('User not found');
+    });
+
+    it('should check if user exists before retrieving groups', async () => {
+      // Test with various non-existent user IDs
+      await expect(getGroupsByUserId(0))
+        .rejects
+        .toThrow('User not found');
+        
+      await expect(getGroupsByUserId(-1))
+        .rejects
+        .toThrow('User not found');
+        
+      await expect(getGroupsByUserId(999999))
+        .rejects
+        .toThrow('User not found');
+    });
+  });
+
+
+
+
+
+
+
 });

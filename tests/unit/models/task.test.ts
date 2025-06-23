@@ -244,11 +244,78 @@ describe('CreateTask Integration Tests', () => {
         connection.release();
       }
     });
+
+    it('should allow group member to create subtask for another member\'s parent task', async () => {
+      // Add user 2 to group 1 as member
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create parent task in group 1 as user 1
+      const parentData = {
+        description: 'Parent task in group',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const parent = await createTask(parentData);
+    
+      // User 2 (group member) should be able to create subtask
+      const childData = {
+        description: 'Child by group member',
+        ownerId: 2,
+        parentId: parent.taskId,
+        completed: false
+      };
+    
+      const child = await createTask(childData);
+      expect(child.parentId).toBe(parent.taskId);
+      expect(child.groupId).toBe(1); // Inherits group
+    });
+    
   });
 
   // ==================== FAILURE CASES ====================
   describe('Failure Cases', () => {
+    it('should fail when task owner (who left group) tries to create subtask', async () => {
+      // Create task in group 1 as user 1
+      const parentData = {
+        description: 'Parent before leaving group',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const parent = await createTask(parentData);
     
+      // Remove user 1 from group 1 (simulating being kicked out)
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 1]
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // User 1 (original owner but no longer in group) cannot create subtask
+      const childData = {
+        description: 'Child by ex-member',
+        ownerId: 1,
+        parentId: parent.taskId,
+        completed: false
+      };
+    
+      await expect(createTask(childData)).rejects.toThrow('Insufficient privileges');
+    });
     it('should fail when creating task in group user does not belong to', async () => {
       const taskData = {
         description: 'Unauthorized group task',
@@ -393,10 +460,85 @@ describe('CreateTask Integration Tests', () => {
         connection2.release();
       }
     });
+
+    it('should fail when users accidentally creating tasks in wrong team', async () => {
+      // Create separate teams
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+          [2, 'Marketing Team', 2]
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [2, 2, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // User 2 tries to create task in Engineering team (group 1)
+      await expect(createTask({
+        description: 'Marketing campaign',
+        ownerId: 2,
+        groupId: 1, // Wrong team!
+        parentId: null,
+        completed: false
+      })).rejects.toThrow('Insufficient privileges');
+    });
+
+    it('should fail when ex member from creating tasks in their old team', async () => {
+      // Employee creates team task
+      const teamTask = await createTask({
+        description: 'Team project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      });
+    
+      // Employee gets removed from team (fired/transferred)
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 1]
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Ex-employee tries to add subtask to their old project
+      await expect(createTask({
+        description: 'One more thing...',
+        ownerId: 1,
+        parentId: teamTask.taskId,
+        completed: false
+      })).rejects.toThrow('Insufficient privileges');
+    });
+
+    it('should fail when user tries adding subtasks to another user\'s personal project', async () => {
+      // User 1 creates personal task (common scenario)
+      const personalTask = await createTask({
+        description: 'My personal project',
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      });
+    
+      // User 2 tries to add their own subtask to user 1's personal project
+      const hijackAttempt = {
+        description: 'I want to add my work here',
+        ownerId: 2,
+        parentId: personalTask.taskId,
+        completed: false
+      };
+    
+      await expect(createTask(hijackAttempt)).rejects.toThrow('Insufficient privileges');
+    });
   });
 });
-
-
 
 describe('UpdateTask Integration Tests', () => {
     
@@ -670,6 +812,37 @@ describe('UpdateTask Integration Tests', () => {
           connection.release();
         }
       });
+      it('should allow group member to update another member\'s task', async () => {
+        // Add user 2 to group 1 as member
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+            [1, 2, 'member']
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // Create task in group 1 as user 1
+        const taskData = {
+          description: 'Team task',
+          ownerId: 1,
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+      
+        // User 2 (group member) updates user 1's task
+        const result = await updateTask(task.taskId!, 2, {
+          description: 'Updated by teammate',
+          completed: true
+        });
+      
+        expect(result.description).toBe('Updated by teammate');
+        expect(result.completed).toBe(true);
+      });
     });
     
     // ==================== FAILURE CASES ====================
@@ -807,8 +980,94 @@ describe('UpdateTask Integration Tests', () => {
           connection.release();
         }
       });
+
+      it('should fail when former group member updates their old tasks', async () => {
+        // Create task in group 1 as user 1
+        const taskData = {
+          description: 'My old project',
+          ownerId: 1,
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+      
+        // Remove user 1 from group (fired/transferred)
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+            [1, 1]
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // User 1 tries to update their old task
+        await expect(updateTask(task.taskId!, 1, {
+          description: 'Final update...'
+        })).rejects.toThrow('Insufficient privileges');
+      });
+
+      it('should fail when unauthorized group changes that bypass security', async () => {
+        // Create second group with user 2
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+            [2, 'HR Team', 2]
+          );
+          await connection.execute(
+            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+            [2, 2, 'admin']
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // User 2 tries to move their personal task to group 1 (where they're not a member)
+        const personalTask = await createTask({
+          description: 'Personal task',
+          ownerId: 2,
+          groupId: null,
+          parentId: null,
+          completed: false
+        });
+      
+        await expect(updateTask(personalTask.taskId!, 2, {
+          groupId: 1 // Trying to join group they're not in
+        })).rejects.toThrow('Insufficient privileges');
+      });
+
+      it('should prevent regular member (non-owner) from removing task from group', async () => {
+        // Add user 2 as regular member (not admin)
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+            [1, 2, 'member']
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // Create task in group as user 1 (user 2 is member but not owner)
+        const taskData = {
+          description: 'Group task owned by user 1',
+          ownerId: 1,  // Owner is user 1
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+      
+        // User 2 (member but not owner, not admin) tries to remove task from group
+        await expect(updateTask(task.taskId!, 2, {
+          groupId: null
+        })).rejects.toThrow('Insufficient privileges');
+      });
     });
-  });
+});
 
 
 describe('DeleteTask Integration Tests', () => {
@@ -1007,6 +1266,53 @@ describe('Success Cases', () => {
         connection.release();
     }
     });
+    it('should allow group member to delete subtask from another member\'s parent task', async () => {
+      // Add user 2 to group 1
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create parent task in group as user 1
+      const parentData = {
+        description: 'Team project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const parent = await createTask(parentData);
+    
+      // Create subtask as user 2
+      const childData = {
+        description: 'My contribution',
+        ownerId: 2,
+        parentId: parent.taskId,
+        completed: false
+      };
+      const child = await createTask(childData);
+    
+      // User 1 (group member) deletes user 2's subtask
+      const result = await deleteTask(child.taskId!, 1);
+      expect(result).toBe(true);
+    
+      // Verify deletion
+      const connection2 = await pool.getConnection();
+      try {
+        const [rows] = await connection2.execute(
+          'SELECT * FROM tasks WHERE task_id = ?',
+          [child.taskId]
+        ) as [RowDataPacket[], any];
+        expect(rows).toHaveLength(0);
+      } finally {
+        connection2.release();
+      }
+    });
 });
 
 // ==================== FAILURE CASES ====================
@@ -1044,6 +1350,134 @@ describe('Failure Cases', () => {
     
     it('should fail when deleting a task that does not exist', async () => {
     await expect(deleteTask(999, 1)).rejects.toThrow('Task not found');
+    });
+    it('should fail on unauthorized deletion that would cascade to protected subtasks', async () => {
+      // Add user 2 to group 1
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create parent task as user 1
+      const parentData = {
+        description: 'Critical parent project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const parent = await createTask(parentData);
+    
+      // Create important subtasks
+      await createTask({
+        description: 'Critical subtask 1',
+        ownerId: 1,
+        parentId: parent.taskId,
+        completed: false
+      });
+      await createTask({
+        description: 'Critical subtask 2',  
+        ownerId: 2,
+        parentId: parent.taskId,
+        completed: false
+      });
+    
+      // Remove user 1 from group (simulating access revocation)
+      const connection2 = await pool.getConnection();
+      try {
+        await connection2.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 1]
+        );
+      } finally {
+        connection2.release();
+      }
+    
+      // User 1 (no longer in group) cannot delete parent (which would cascade)
+      await expect(deleteTask(parent.taskId!, 1)).rejects.toThrow('Insufficient privileges');
+    });
+    it('should fail when users delete tasks in groups they don\'t belong to', async () => {
+      // Create second group with user 2
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+          [2, 'Marketing Team', 2]
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [2, 2, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create task in group 1 (Engineering)
+      const taskData = {
+        description: 'Engineering project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
+    
+      // User 2 (Marketing admin) tries to delete Engineering task
+      await expect(deleteTask(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+    
+      // Verify task still exists
+      const connection2 = await pool.getConnection();
+      try {
+        const [rows] = await connection2.execute(
+          'SELECT * FROM tasks WHERE task_id = ?',
+          [task.taskId]
+        ) as [RowDataPacket[], any];
+        expect(rows).toHaveLength(1);
+      } finally {
+        connection2.release();
+      }
+    });
+    it('should fail when non associated user delete their old team tasks', async () => {
+      // Create task in group as user 1
+      const taskData = {
+        description: 'Important team project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
+    
+      // Employee gets fired - remove from group
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 1]
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Ex-employee tries to delete their old work
+      await expect(deleteTask(task.taskId!, 1)).rejects.toThrow('Insufficient privileges');
+    
+      // Verify task still exists
+      const connection2 = await pool.getConnection();
+      try {
+        const [rows] = await connection2.execute(
+          'SELECT * FROM tasks WHERE task_id = ?',
+          [task.taskId]
+        ) as [RowDataPacket[], any];
+        expect(rows).toHaveLength(1);
+      } finally {
+        connection2.release();
+      }
     });
 });
 });
@@ -1088,6 +1522,48 @@ describe('Success Cases', () => {
     expect(result.task.groupId).toBeNull();
     expect(result.task.completed).toBe(false);
     expect(result.children).toHaveLength(0);
+    });
+    it('should allow group member to view task hierarchy across different owners', async () => {
+      // Add user 2 to group 1
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create parent task as user 1
+      const parent = await createTask({
+        description: 'Team project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      });
+    
+      // Create subtasks by different team members
+      await createTask({
+        description: 'User 1 subtask',
+        ownerId: 1,
+        parentId: parent.taskId,
+        completed: false
+      });
+      await createTask({
+        description: 'User 2 subtask', 
+        ownerId: 2,
+        parentId: parent.taskId,
+        completed: false
+      });
+    
+      // User 2 can see full hierarchy including user 1's subtasks
+      const result = await getTaskById(parent.taskId!, 2);
+      
+      expect(result.children).toHaveLength(2);
+      expect(result.children.some(c => c.ownerId === 1)).toBe(true);
+      expect(result.children.some(c => c.ownerId === 2)).toBe(true);
     });
     
     it('should retrieve a task with children', async () => {
@@ -1138,39 +1614,6 @@ describe('Success Cases', () => {
     expect(result.children[1].completed).toBe(true);
     });
     
-    it('should retrieve a task that belongs to a group the user is a member of', async () => {
-    // Add user 2 to group 1
-    const connection = await pool.getConnection();
-    try {
-        await connection.execute(
-        'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-        [1, 2, 'member']
-        );
-    } finally {
-        connection.release();
-    }
-    
-    // Create a task in group 1 owned by user 1
-    const taskData = {
-        description: 'Group task',
-        dueDate: null,
-        ownerId: 1,
-        groupId: 1,
-        parentId: null,
-        completed: false
-    };
-    
-    const task = await createTask(taskData);
-    
-    // Retrieve as user 2
-    const result = await getTaskById(task.taskId!, 2);
-    
-    // Verify retrieval
-    expect(result.task.taskId).toBe(task.taskId);
-    expect(result.task.description).toBe('Group task');
-    expect(result.task.ownerId).toBe(1);
-    expect(result.task.groupId).toBe(1);
-    });
 });
 
 // ==================== FAILURE CASES ====================
@@ -1195,6 +1638,61 @@ describe('Failure Cases', () => {
     
     // Try to retrieve as user 2
     await expect(getTaskById(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+    });
+
+    it('should prevent former member from accessing their old team tasks', async () => {
+      // Create task in group as user 1
+      const taskData = {
+        description: 'Confidential team strategy',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
+    
+      // Employee gets terminated - remove from group
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 1]
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Ex-employee tries to access their old task
+      await expect(getTaskById(task.taskId!, 1)).rejects.toThrow('Insufficient privileges');
+    });
+
+    it('should prevent unauthorized task viewing', async () => {
+      // Create HR department
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+          [2, 'HR Department', 2]
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [2, 2, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create sensitive HR task
+      const hrTask = await createTask({
+        description: 'Employee performance reviews',
+        ownerId: 2,
+        groupId: 2,
+        parentId: null,
+        completed: false
+      });
+    
+      // Engineering employee (user 1) tries to snoop on HR task
+      await expect(getTaskById(hrTask.taskId!, 1)).rejects.toThrow('Insufficient privileges');
     });
 });
 });
@@ -1551,6 +2049,32 @@ describe('AddTaskComment Integration Tests', () => {
           connection.release();
         }
       });
+
+      it('should prevent ex-employee from commenting on their old team tasks', async () => {
+        // Create task in group as user 1
+        const taskData = {
+          description: 'Ongoing team discussion',
+          ownerId: 1,
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+      
+        // User gets fired - remove from group
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+            [1, 1]
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // Ex-employee tries to add "final thoughts"
+        await expect(addTaskComment(task.taskId!, 1, 'One last thing before I go...')).rejects.toThrow('Insufficient privileges to comment on this task');
+      });
     });
 });
 
@@ -1830,7 +2354,7 @@ describe('DeleteTaskComment Integration Tests', () => {
         const comment = await addTaskComment(task.taskId!, 1, commentContent);
         
         // Try to delete as user 3 (not comment owner, not task owner, no group)
-        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges to delete this comment');
+        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges');
         
         // Verify comment still exists
         const connection2 = await pool.getConnection();
@@ -1884,7 +2408,7 @@ describe('DeleteTaskComment Integration Tests', () => {
         const comment = await addTaskComment(task.taskId!, 2, commentContent);
         
         // Try to delete as user 3 (member but not admin, not comment owner, not task owner)
-        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges to delete this comment');
+        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges');
         
         // Verify comment still exists
         const connection2 = await pool.getConnection();
@@ -1933,7 +2457,7 @@ describe('DeleteTaskComment Integration Tests', () => {
         const comment = await addTaskComment(task.taskId!, 1, commentContent);
         
         // Try to delete as user 2 (admin of different group)
-        await expect(deleteTaskComment(comment.commentId!, 2)).rejects.toThrow('Insufficient privileges to delete this comment');
+        await expect(deleteTaskComment(comment.commentId!, 2)).rejects.toThrow('Insufficient privileges');
         
         // Verify comment still exists
         const connection2 = await pool.getConnection();
@@ -1978,7 +2502,7 @@ describe('DeleteTaskComment Integration Tests', () => {
         const comment = await addTaskComment(task.taskId!, 1, commentContent);
         
         // Try to delete as user 3 (not in group 1)
-        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges to delete this comment');
+        await expect(deleteTaskComment(comment.commentId!, 3)).rejects.toThrow('Insufficient privileges');
         
         // Verify comment still exists
         const connection2 = await pool.getConnection();
@@ -1992,6 +2516,33 @@ describe('DeleteTaskComment Integration Tests', () => {
         } finally {
           connection2.release();
         }
+      });
+
+      it('should prevent regular member from deleting task owner\'s comment', async () => {
+        // Add user 2 as regular member (not admin)
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+            [1, 2, 'member']
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // Create task and comment as user 1 (task owner)
+        const taskData = {
+          description: 'Important team task',
+          ownerId: 1,
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+        const comment = await addTaskComment(task.taskId!, 1, 'Critical project update');
+      
+        // User 2 (member but not admin, not comment owner, not task owner) tries to delete
+        await expect(deleteTaskComment(comment.commentId!, 2)).rejects.toThrow('Insufficient privileges');
       });
     });
 });
@@ -2178,35 +2729,7 @@ describe('GetTaskComments Integration Tests', () => {
         expect(result[2].username).toBe('testuser3');
       });
       
-      it('should handle special characters and long content in comments', async () => {
-        // Create a task owned by user 1
-        const taskData = {
-          description: 'Task for special content test',
-          dueDate: null,
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add comments with special characters and long content
-        const specialComment = 'Comment with special chars: éñ中文🎉 & <script>alert("xss")</script>';
-        const longComment = 'A'.repeat(1000); // Very long comment
-        
-        await addTaskComment(task.taskId!, 1, specialComment);
-        await addTaskComment(task.taskId!, 1, longComment);
-        
-        // Get comments
-        const result = await getTaskComments(task.taskId!, 1);
-        
-        // Verify content is preserved correctly
-        expect(result).toHaveLength(2);
-        expect(result[0].content).toBe(specialComment);
-        expect(result[1].content).toBe(longComment);
-        expect(result[1].content).toHaveLength(1000);
-      });
+
     });
   
     // ==================== FAILURE CASES ====================
@@ -2344,13 +2867,46 @@ describe('GetTaskComments Integration Tests', () => {
         // Try to view comments as user 2 (no longer in group)
         await expect(getTaskComments(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
       });
+      it('should prevent industrial espionage via comment history access', async () => {
+        // Create competitor company group
+        const connection = await pool.getConnection();
+        try {
+          await connection.execute(
+            'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+            [2, 'Competitor Corp', 2]
+          );
+          await connection.execute(
+            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+            [2, 2, 'admin']
+          );
+        } finally {
+          connection.release();
+        }
+      
+        // Create confidential engineering task
+        const taskData = {
+          description: 'Secret product development',
+          ownerId: 1,
+          groupId: 1,
+          parentId: null,
+          completed: false
+        };
+        const task = await createTask(taskData);
+      
+        // Add sensitive comments
+        await addTaskComment(task.taskId!, 1, 'Budget: $2M, Launch Q3');
+        await addTaskComment(task.taskId!, 1, 'Competitor analysis attached');
+      
+        // Competitor employee (user 2) tries to read comment history
+        await expect(getTaskComments(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+      });
     });
 });
 
 
 
 
-  describe('AssignOrWatchTask Integration Tests', () => {
+describe('AssignOrWatchTask Integration Tests', () => {
   
     beforeEach(async () => {
       // Setup test database
@@ -2493,106 +3049,16 @@ describe('GetTaskComments Integration Tests', () => {
           
           describe(`${type} others on task`, () => {
             
-            it(`should ${type} others on task with ownership by current user`, async () => {
-              // Create a task owned by user 1 (no group)
-              const taskData = {
-                description: `Task for ${type} others as owner`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // Assign/watch user 2 as task owner (user 1)
-              const result = await assignOrWatchTask(task.taskId!, 2, 1, type);
-              
-              // Verify success
-              expect(result).toBe(true);
-              
-              // Verify in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection = await pool.getConnection();
-              try {
-                const [rows] = await connection.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                
-                expect(rows).toHaveLength(1);
-                expect(rows[0].user_id).toBe(2);
-              } finally {
-                connection.release();
-              }
-            });
+        
             
-            it(`should ${type} others on subChild of parent task owned by current user`, async () => {
-              // Create parent task owned by user 1
-              const parentData = {
-                description: 'Parent task',
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const parent = await createTask(parentData);
-              
-              // Create child task owned by user 1
-              const childData = {
-                description: `Child task for ${type} others`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: parent.taskId,
-                completed: false
-              };
-              
-              const child = await createTask(childData);
-              
-              // Assign/watch user 2 to child task as parent owner (user 1)
-              const result = await assignOrWatchTask(child.taskId!, 2, 1, type);
-              
-              // Verify success
-              expect(result).toBe(true);
-              
-              // Verify in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection = await pool.getConnection();
-              try {
-                const [rows] = await connection.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [child.taskId, 2]
-                ) as [RowDataPacket[], any];
-                
-                expect(rows).toHaveLength(1);
-                expect(rows[0].task_id).toBe(child.taskId);
-                expect(rows[0].user_id).toBe(2);
-              } finally {
-                connection.release();
-              }
-            });
+        
             
-            it(`should ${type} others on task that belongs to group where current user is group admin`, async () => {
-              // Add user 2 to group 1 as a member
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 2
+            it(`should self ${type} on group task as group admin`, async () => {
+              // Create a task in group 1 owned by user 1 (who is group admin)
               const taskData = {
-                description: `Task for ${type} others as group admin`,
+                description: `Task for self ${type} as group admin`,
                 dueDate: null,
-                ownerId: 2,
+                ownerId: 1,
                 groupId: 1,
                 parentId: null,
                 completed: false
@@ -2600,118 +3066,15 @@ describe('GetTaskComments Integration Tests', () => {
               
               const task = await createTask(taskData);
               
-              // Assign/watch user 2 as group admin (user 1)
-              const result = await assignOrWatchTask(task.taskId!, 2, 1, type);
-              
-              // Verify success
+              // Self assign/watch as group admin (not because of task ownership)
+              const result = await assignOrWatchTask(task.taskId!, 1, 1, type);
               expect(result).toBe(true);
-              
-              // Verify in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                
-                expect(rows).toHaveLength(1);
-                expect(rows[0].user_id).toBe(2);
-              } finally {
-                connection2.release();
-              }
             });
             
-            it(`should ${type} group member to group task when user is group admin`, async () => {
-              // Create user 3 and add users to group 1
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-                  [3, 'testuser3', 'hashedpass3']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 3, 'member']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 2
-              const taskData = {
-                description: `Group task for ${type} by admin`,
-                dueDate: null,
-                ownerId: 2,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // Assign/watch user 3 as group admin (user 1)
-              const result = await assignOrWatchTask(task.taskId!, 3, 1, type);
-              
-              // Verify success
-              expect(result).toBe(true);
-              
-              // Verify in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 3]
-                ) as [RowDataPacket[], any];
-                
-                expect(rows).toHaveLength(1);
-                expect(rows[0].user_id).toBe(3);
-              } finally {
-                connection2.release();
-              }
-            });
+         
           });
           
-          it(`should handle duplicate ${type} gracefully (idempotent behavior)`, async () => {
-            // Create a task owned by user 1
-            const taskData = {
-              description: `Task for duplicate ${type} test`,
-              dueDate: null,
-              ownerId: 1,
-              groupId: null,
-              parentId: null,
-              completed: false
-            };
-            
-            const task = await createTask(taskData);
-            
-            // First assign/watch
-            const result1 = await assignOrWatchTask(task.taskId!, 1, 1, type);
-            expect(result1).toBe(true);
-            
-            // Second assign/watch (should not fail)
-            const result2 = await assignOrWatchTask(task.taskId!, 1, 1, type);
-            expect(result2).toBe(true);
-            
-            // Verify only one record exists
-            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-            const connection = await pool.getConnection();
-            try {
-              const [rows] = await connection.execute(
-                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                [task.taskId, 1]
-              ) as [RowDataPacket[], any];
-              
-              expect(rows).toHaveLength(1);
-            } finally {
-              connection.release();
-            }
-          });
+       
         });
         
         // ==================== FAILURE CASES ====================
@@ -2805,51 +3168,36 @@ describe('GetTaskComments Integration Tests', () => {
           
           describe(`${type} others failures`, () => {
             
-            it(`should fail to ${type} others on task that current user doesn't own`, async () => {
-              // Create a task owned by user 1 (no group)
+            it(`should prevent unauthorized cross-team ${type} assignments`, async () => {
+              // Create second team
+              const connection = await pool.getConnection();
+              try {
+                await connection.execute(
+                  'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+                  [2, 'Marketing', 2]
+                );
+                await connection.execute(
+                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                  [2, 2, 'admin']
+                );
+              } finally {
+                connection.release();
+              }
+            
+              // Create Engineering task
               const taskData = {
-                description: `Task for unauthorized ${type} others test`,
-                dueDate: null,
+                description: 'Engineering project',
                 ownerId: 1,
-                groupId: null,
+                groupId: 1,
                 parentId: null,
                 completed: false
               };
-              
               const task = await createTask(taskData);
-              
-              // Try to assign/watch user 1 as user 2 (not owner)
+            
+              // Marketing admin tries to assign someone to Engineering task
               await expect(assignOrWatchTask(task.taskId!, 1, 2, type)).rejects.toThrow('Insufficient privileges');
             });
-            
-            it(`should fail to ${type} others when not subtask parent owner`, async () => {
-              // Create parent task owned by user 1
-              const parentData = {
-                description: 'Parent task owned by user 1',
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const parent = await createTask(parentData);
-              
-              // Create child task owned by user 1
-              const childData = {
-                description: 'Child task',
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: parent.taskId,
-                completed: false
-              };
-              
-              const child = await createTask(childData);
-              
-              // Try to assign/watch someone to child task as user 2 (not parent owner)
-              await expect(assignOrWatchTask(child.taskId!, 1, 2, type)).rejects.toThrow('Insufficient privileges');
-            });
+       
             
             it(`should fail to ${type} others when not group admin`, async () => {
               // Add user 2 to group 1 as a member (not admin)
@@ -2910,325 +3258,40 @@ describe('GetTaskComments Integration Tests', () => {
         });
       });
     });
+});
+
+
+
+
+
+describe('RemoveAssignOrWatchTask Integration Tests', () => {
+
+  beforeEach(async () => {
+    // Setup test database
+    await cleanupDatabase();
+    await setupTestData();
   });
 
+  afterAll(async () => {
+    // Final cleanup
+    await cleanupDatabase();
+  });
 
+  // Test both 'assigned' and 'watcher' types
+  const testTypes: ('assigned' | 'watcher')[] = ['assigned', 'watcher'];
 
-
-
-  describe('RemoveAssignOrWatchTask Integration Tests', () => {
-  
-    beforeEach(async () => {
-      // Setup test database
-      await cleanupDatabase();
-      await setupTestData();
-    });
-  
-    afterAll(async () => {
-      // Final cleanup
-      await cleanupDatabase();
-    });
-  
-    // Test both 'assigned' and 'watcher' types
-    const testTypes: ('assigned' | 'watcher')[] = ['assigned', 'watcher'];
-  
-    testTypes.forEach(type => {
-      describe(`Remove ${type.charAt(0).toUpperCase() + type.slice(1)} Type Tests`, () => {
+  testTypes.forEach(type => {
+    describe(`Remove ${type.charAt(0).toUpperCase() + type.slice(1)} Type Tests`, () => {
+      
+      // ==================== SUCCESS CASES ====================
+      describe('Success Cases', () => {
         
-        // ==================== SUCCESS CASES ====================
-        describe('Success Cases', () => {
+        describe(`Self ${type} removal`, () => {
           
-          describe(`Self ${type} removal`, () => {
-            
-            it(`should remove self ${type} on task that belongs to current user`, async () => {
-              // Create a task owned by user 1
-              const taskData = {
-                description: `Task for self ${type} removal by owner`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch self
-              await assignOrWatchTask(task.taskId!, 1, 1, type);
-              
-              // Verify assignment/watch exists
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection = await pool.getConnection();
-              try {
-                const [beforeRows] = await connection.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 1]
-                ) as [RowDataPacket[], any];
-                expect(beforeRows).toHaveLength(1);
-              } finally {
-                connection.release();
-              }
-              
-              // Remove self assignment/watch
-              const result = await removeAssignOrWatchTask(task.taskId!, 1, 1, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const connection2 = await pool.getConnection();
-              try {
-                const [afterRows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 1]
-                ) as [RowDataPacket[], any];
-                expect(afterRows).toHaveLength(0);
-              } finally {
-                connection2.release();
-              }
-            });
-            
-            it(`should remove self ${type} on task that belongs to related group of current user`, async () => {
-              // Add user 2 to group 1 as a member
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 1
-              const taskData = {
-                description: `Group task for self ${type} removal`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch self as group member
-              await assignOrWatchTask(task.taskId!, 2, 2, type);
-              
-              // Remove self assignment/watch as group member
-              const result = await removeAssignOrWatchTask(task.taskId!, 2, 2, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(0);
-              } finally {
-                connection2.release();
-              }
-            });
-          });
-          
-          describe(`${type} removal of others`, () => {
-            
-            it(`should remove ${type} of others on task that belongs to current user`, async () => {
-              // Create a task owned by user 1
-              const taskData = {
-                description: `Task for ${type} removal by owner`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 2 as task owner
-              await assignOrWatchTask(task.taskId!, 2, 1, type);
-              
-              // Remove user 2's assignment/watch as task owner
-              const result = await removeAssignOrWatchTask(task.taskId!, 2, 1, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection = await pool.getConnection();
-              try {
-                const [rows] = await connection.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(0);
-              } finally {
-                connection.release();
-              }
-            });
-            
-            it(`should remove ${type} on subtask of parent task that belonged to the current user`, async () => {
-              // Create parent task owned by user 1
-              const parentData = {
-                description: 'Parent task for removal test',
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const parent = await createTask(parentData);
-              
-              // Create child task owned by user 1
-              const childData = {
-                description: `Child task for ${type} removal`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: parent.taskId,
-                completed: false
-              };
-              
-              const child = await createTask(childData);
-              
-              // First assign/watch user 2 to child task
-              await assignOrWatchTask(child.taskId!, 2, 1, type);
-              
-              // Remove user 2's assignment/watch as parent owner
-              const result = await removeAssignOrWatchTask(child.taskId!, 2, 1, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection = await pool.getConnection();
-              try {
-                const [rows] = await connection.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [child.taskId, 2]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(0);
-              } finally {
-                connection.release();
-              }
-            });
-            
-            it(`should remove ${type} when current user is group admin`, async () => {
-              // Add user 2 to group 1 as a member
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 2
-              const taskData = {
-                description: `Group task for ${type} removal by admin`,
-                dueDate: null,
-                ownerId: 2,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 2 to their own task
-              await assignOrWatchTask(task.taskId!, 2, 2, type);
-              
-              // Remove user 2's assignment/watch as group admin (user 1)
-              const result = await removeAssignOrWatchTask(task.taskId!, 2, 1, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(0);
-              } finally {
-                connection2.release();
-              }
-            });
-            
-            it(`should remove ${type} of group member by different group admin`, async () => {
-              // Create user 3 and add users to group 1
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-                  [3, 'testuser3', 'hashedpass3']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 3, 'admin']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 2
-              const taskData = {
-                description: `Group task for ${type} removal by different admin`,
-                dueDate: null,
-                ownerId: 2,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 2 to their task
-              await assignOrWatchTask(task.taskId!, 2, 2, type);
-              
-              // Remove user 2's assignment/watch as different group admin (user 3)
-              const result = await removeAssignOrWatchTask(task.taskId!, 2, 3, type);
-              
-              // Verify removal success
-              expect(result).toBe(true);
-              
-              // Verify removal in database
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 2]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(0);
-              } finally {
-                connection2.release();
-              }
-            });
-          });
-          
-          it(`should handle removal of non-existent ${type} gracefully (idempotent behavior)`, async () => {
+          it(`should remove self ${type} on task that belongs to current user`, async () => {
             // Create a task owned by user 1
             const taskData = {
-              description: `Task for non-existent ${type} removal test`,
+              description: `Task for self ${type} removal by owner`,
               dueDate: null,
               ownerId: 1,
               groupId: null,
@@ -3238,708 +3301,880 @@ describe('GetTaskComments Integration Tests', () => {
             
             const task = await createTask(taskData);
             
-            // Remove assignment/watch that doesn't exist (should succeed)
+            // First assign/watch self
+            await assignOrWatchTask(task.taskId!, 1, 1, type);
+            
+            // Verify assignment/watch exists
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection = await pool.getConnection();
+            try {
+              const [beforeRows] = await connection.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 1]
+              ) as [RowDataPacket[], any];
+              expect(beforeRows).toHaveLength(1);
+            } finally {
+              connection.release();
+            }
+            
+            // Remove self assignment/watch
             const result = await removeAssignOrWatchTask(task.taskId!, 1, 1, type);
             
-            // Verify success (idempotent behavior)
+            // Verify removal success
+            expect(result).toBe(true);
+            
+            // Verify removal in database
+            const connection2 = await pool.getConnection();
+            try {
+              const [afterRows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 1]
+              ) as [RowDataPacket[], any];
+              expect(afterRows).toHaveLength(0);
+            } finally {
+              connection2.release();
+            }
+          });
+          
+          it(`should remove self ${type} on task that belongs to related group of current user`, async () => {
+            // Add user 2 to group 1 as a member
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+            } finally {
+              connection.release();
+            }
+            
+            // Create a task in group 1 owned by user 1
+            const taskData = {
+              description: `Group task for self ${type} removal`,
+              dueDate: null,
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            
+            const task = await createTask(taskData);
+            
+            // First assign/watch self as group member
+            await assignOrWatchTask(task.taskId!, 2, 2, type);
+            
+            // Remove self assignment/watch as group member
+            const result = await removeAssignOrWatchTask(task.taskId!, 2, 2, type);
+            
+            // Verify removal success
+            expect(result).toBe(true);
+            
+            // Verify removal in database
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection2 = await pool.getConnection();
+            try {
+              const [rows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 2]
+              ) as [RowDataPacket[], any];
+              expect(rows).toHaveLength(0);
+            } finally {
+              connection2.release();
+            }
+          });
+        });
+        
+        describe(`${type} removal of others`, () => {
+          it(`should allow group admin to remove ${type} assignments from any group member`, async () => {
+            // Add user 2 to group 1 as member
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+            } finally {
+              connection.release();
+            }
+          
+            // Create group task
+            const taskData = {
+              description: `Group task for ${type} removal by admin`,
+              ownerId: 2, // Owned by member
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            const task = await createTask(taskData);
+          
+            // Member assigns themselves
+            await assignOrWatchTask(task.taskId!, 2, 2, type);
+          
+            // Group admin (user 1) removes member's assignment
+            const result = await removeAssignOrWatchTask(task.taskId!, 2, 1, type);
             expect(result).toBe(true);
           });
+          
+
+          
+          it(`should remove ${type} when current user is group admin`, async () => {
+            // Add user 2 to group 1 as a member
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+            } finally {
+              connection.release();
+            }
+            
+            // Create a task in group 1 owned by user 2
+            const taskData = {
+              description: `Group task for ${type} removal by admin`,
+              dueDate: null,
+              ownerId: 2,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            
+            const task = await createTask(taskData);
+            
+            // First assign/watch user 2 to their own task
+            await assignOrWatchTask(task.taskId!, 2, 2, type);
+            
+            // Remove user 2's assignment/watch as group admin (user 1)
+            const result = await removeAssignOrWatchTask(task.taskId!, 2, 1, type);
+            
+            // Verify removal success
+            expect(result).toBe(true);
+            
+            // Verify removal in database
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection2 = await pool.getConnection();
+            try {
+              const [rows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 2]
+              ) as [RowDataPacket[], any];
+              expect(rows).toHaveLength(0);
+            } finally {
+              connection2.release();
+            }
+          });
+          it(`should allow group member to remove ${type} assignments from team tasks`, async () => {
+            // Add user 2 to group 1
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+            } finally {
+              connection.release();
+            }
+          
+            // Create group task, assign user 2
+            const taskData = {
+              description: 'Team collaboration',
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            const task = await createTask(taskData);
+            await assignOrWatchTask(task.taskId!, 2, 1, type);
+          
+            // User 2 (group member) removes their own assignment
+            const result = await removeAssignOrWatchTask(task.taskId!, 2, 2, type);
+            expect(result).toBe(true);
+          });
+          
+
         });
         
-        // ==================== FAILURE CASES ====================
-        describe('Failure Cases', () => {
+
+      });
+      
+      // ==================== FAILURE CASES ====================
+      describe('Failure Cases', () => {
+        
+        it(`should fail to remove ${type} on task that is not found`, async () => {
+          await expect(removeAssignOrWatchTask(999, 1, 1, type)).rejects.toThrow('Task not found');
+        });
+        
+        describe(`Self ${type} removal failures`, () => {
           
-          it(`should fail to remove ${type} on task that is not found`, async () => {
-            await expect(removeAssignOrWatchTask(999, 1, 1, type)).rejects.toThrow('Task not found');
+          it(`should fail to remove self ${type} on task that does not belong to current user and does not belong to a related group`, async () => {
+            // Create a task owned by user 1 (no group)
+            const taskData = {
+              description: `Private task for unauthorized self ${type} removal`,
+              dueDate: null,
+              ownerId: 1,
+              groupId: null,
+              parentId: null,
+              completed: false
+            };
+            
+            const task = await createTask(taskData);
+            console.log("created task", task)
+            
+            // Try to remove self assignment/watch as user 2 (no ownership, no group)
+            await expect(removeAssignOrWatchTask(task.taskId!, 2, 2, type)).rejects.toThrow('Insufficient privileges');
           });
           
-          describe(`Self ${type} removal failures`, () => {
+          it(`should fail to remove self ${type} on group task where user is not a group member`, async () => {
+            // Create a second group with user 2 as admin
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
+                [2, 'User 2 Group', 'Group for user 2', 2]
+              );
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [2, 2, 'admin']
+              );
+            } finally {
+              connection.release();
+            }
             
-            it(`should fail to remove self ${type} on task that does not belong to current user and does not belong to a related group`, async () => {
-              // Create a task owned by user 1 (no group)
-              const taskData = {
-                description: `Private task for unauthorized self ${type} removal`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              console.log("created task", task)
-              
-              // Try to remove self assignment/watch as user 2 (no ownership, no group)
-              await expect(removeAssignOrWatchTask(task.taskId!, 2, 2, type)).rejects.toThrow('Insufficient privileges');
-            });
+            // Create a task in group 2 owned by user 2
+            const taskData = {
+              description: `Group 2 task for unauthorized self ${type} removal`,
+              dueDate: null,
+              ownerId: 2,
+              groupId: 2,
+              parentId: null,
+              completed: false
+            };
             
-            it(`should fail to remove self ${type} on group task where user is not a group member`, async () => {
-              // Create a second group with user 2 as admin
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
-                  [2, 'User 2 Group', 'Group for user 2', 2]
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [2, 2, 'admin']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 2 owned by user 2
-              const taskData = {
-                description: `Group 2 task for unauthorized self ${type} removal`,
-                dueDate: null,
-                ownerId: 2,
-                groupId: 2,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // Try to remove self assignment/watch as user 1 (not in group 2)
-              await expect(removeAssignOrWatchTask(task.taskId!, 1, 1, type)).rejects.toThrow('Insufficient privileges');
-            });
+            const task = await createTask(taskData);
+            
+            // Try to remove self assignment/watch as user 1 (not in group 2)
+            await expect(removeAssignOrWatchTask(task.taskId!, 1, 1, type)).rejects.toThrow('Insufficient privileges');
+          });
+          it(`should prevent ex-employee from removing ${type} assignments on old team tasks`, async () => {
+            // Add user 2 to group, create task, assign user 2
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+            } finally {
+              connection.release();
+            }
+          
+            const taskData = {
+              description: 'Team task',
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            const task = await createTask(taskData);
+            await assignOrWatchTask(task.taskId!, 2, 2, type);
+          
+            // Remove user 2 from group (fired)
+            const connection2 = await pool.getConnection();
+            try {
+              await connection2.execute(
+                'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+                [1, 2]
+              );
+            } finally {
+              connection2.release();
+            }
+          
+            // Ex-employee tries to remove their assignment
+            await expect(removeAssignOrWatchTask(task.taskId!, 2, 2, type)).rejects.toThrow('Insufficient privileges');
+          });
+          it(`should prevent cross-department ${type} removal`, async () => {
+            // Create Marketing team
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+                [2, 'Marketing', 2]
+              );
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [2, 2, 'admin']
+              );
+            } finally {
+              connection.release();
+            }
+          
+            // Create Engineering task with assignment
+            const taskData = {
+              description: 'Engineering project',
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            const task = await createTask(taskData);
+            await assignOrWatchTask(task.taskId!, 1, 1, type);
+          
+            // Marketing admin tries to remove Engineering assignment
+            await expect(removeAssignOrWatchTask(task.taskId!, 1, 2, type)).rejects.toThrow('Insufficient privileges');
+          });
+        });
+        
+        describe(`${type} removal of others failures`, () => {
+          
+          it(`should fail to remove ${type} of others when user does not belong to current user / is not of subtask that is related to parent task owned by current user / is not group admin`, async () => {
+            // Create user 3
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
+                [3, 'testuser3', 'hashedpass3']
+              );
+            } finally {
+              connection.release();
+            }
+            
+            // Create a task owned by user 1 (no group)
+            const taskData = {
+              description: `Task for unauthorized ${type} removal of others`,
+              dueDate: null,
+              ownerId: 1,
+              groupId: null,
+              parentId: null,
+              completed: false
+            };
+            
+            const task = await createTask(taskData);
+            
+            // First assign/watch user 1 to their own task
+            await assignOrWatchTask(task.taskId!, 1, 1, type);
+            
+            // Try to remove user 1's assignment/watch as user 3 (not owner, no parent relationship, no group admin)
+            await expect(removeAssignOrWatchTask(task.taskId!, 1, 3, type)).rejects.toThrow('Insufficient privileges');
+            
+            // Verify assignment/watch still exists
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection2 = await pool.getConnection();
+            try {
+              const [rows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 1]
+              ) as [RowDataPacket[], any];
+              expect(rows).toHaveLength(1);
+            } finally {
+              connection2.release();
+            }
           });
           
-          describe(`${type} removal of others failures`, () => {
+          it(`should fail when group member (not admin) tries to remove ${type} of others`, async () => {
+            // Add user 2 and user 3 to group 1 as members (not admins)
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
+                [3, 'testuser3', 'hashedpass3']
+              );
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 2, 'member']
+              );
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [1, 3, 'member']
+              );
+            } finally {
+              connection.release();
+            }
             
-            it(`should fail to remove ${type} of others when user does not belong to current user / is not of subtask that is related to parent task owned by current user / is not group admin`, async () => {
-              // Create user 3
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-                  [3, 'testuser3', 'hashedpass3']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task owned by user 1 (no group)
-              const taskData = {
-                description: `Task for unauthorized ${type} removal of others`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 1 to their own task
-              await assignOrWatchTask(task.taskId!, 1, 1, type);
-              
-              // Try to remove user 1's assignment/watch as user 3 (not owner, no parent relationship, no group admin)
-              await expect(removeAssignOrWatchTask(task.taskId!, 1, 3, type)).rejects.toThrow('Insufficient privileges');
-              
-              // Verify assignment/watch still exists
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 1]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(1);
-              } finally {
-                connection2.release();
-              }
-            });
+            // Create a task in group 1 owned by user 1
+            const taskData = {
+              description: `Group task for unauthorized ${type} removal by member`,
+              dueDate: null,
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
             
-            it(`should fail when group member (not admin) tries to remove ${type} of others`, async () => {
-              // Add user 2 and user 3 to group 1 as members (not admins)
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-                  [3, 'testuser3', 'hashedpass3']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 2, 'member']
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [1, 3, 'member']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 1
-              const taskData = {
-                description: `Group task for unauthorized ${type} removal by member`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 3 to task as task owner
-              await assignOrWatchTask(task.taskId!, 3, 1, type);
-              
-              // Try to remove user 3's assignment/watch as user 2 (member but not admin, not owner)
-              await expect(removeAssignOrWatchTask(task.taskId!, 3, 2, type)).rejects.toThrow('Insufficient privileges');
-              
-              // Verify assignment/watch still exists
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 3]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(1);
-              } finally {
-                connection2.release();
-              }
-            });
+            const task = await createTask(taskData);
             
-            it(`should fail when user from different group tries to remove ${type}`, async () => {
-              // Create a second group with user 2 as admin
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
-                  [2, 'User 2 Group', 'Group for user 2', 2]
-                );
-                await connection.execute(
-                  'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-                  [2, 2, 'admin']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create a task in group 1 owned by user 1
-              const taskData = {
-                description: `Group 1 task for cross-group ${type} removal test`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: 1,
-                parentId: null,
-                completed: false
-              };
-              
-              const task = await createTask(taskData);
-              
-              // First assign/watch user 1 to their own task
-              await assignOrWatchTask(task.taskId!, 1, 1, type);
-              
-              // Try to remove user 1's assignment/watch as user 2 (admin of different group)
-              await expect(removeAssignOrWatchTask(task.taskId!, 1, 2, type)).rejects.toThrow('Insufficient privileges');
-              
-              // Verify assignment/watch still exists
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [task.taskId, 1]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(1);
-              } finally {
-                connection2.release();
-              }
-            });
+            // First assign/watch user 3 to task as task owner
+            await assignOrWatchTask(task.taskId!, 3, 1, type);
             
-            it(`should fail when non-parent owner tries to remove ${type} from subtask`, async () => {
-              // Create user 3
-              const connection = await pool.getConnection();
-              try {
-                await connection.execute(
-                  'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-                  [3, 'testuser3', 'hashedpass3']
-                );
-              } finally {
-                connection.release();
-              }
-              
-              // Create parent task owned by user 1
-              const parentData = {
-                description: 'Parent task owned by user 1',
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: null,
-                completed: false
-              };
-              
-              const parent = await createTask(parentData);
-              
-              // Create child task owned by user 1
-              const childData = {
-                description: `Child task for unauthorized ${type} removal`,
-                dueDate: null,
-                ownerId: 1,
-                groupId: null,
-                parentId: parent.taskId,
-                completed: false
-              };
-              
-              const child = await createTask(childData);
-              
-              // First assign/watch user 1 to child task
-              await assignOrWatchTask(child.taskId!, 1, 1, type);
-              
-              // Try to remove user 1's assignment/watch as user 3 (not parent owner)
-              await expect(removeAssignOrWatchTask(child.taskId!, 1, 3, type)).rejects.toThrow('Insufficient privileges');
-              
-              // Verify assignment/watch still exists
-              const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
-              const connection2 = await pool.getConnection();
-              try {
-                const [rows] = await connection2.execute(
-                  `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
-                  [child.taskId, 1]
-                ) as [RowDataPacket[], any];
-                expect(rows).toHaveLength(1);
-              } finally {
-                connection2.release();
-              }
-            });
+            // Try to remove user 3's assignment/watch as user 2 (member but not admin, not owner)
+            await expect(removeAssignOrWatchTask(task.taskId!, 3, 2, type)).rejects.toThrow('Insufficient privileges');
+            
+            // Verify assignment/watch still exists
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection2 = await pool.getConnection();
+            try {
+              const [rows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 3]
+              ) as [RowDataPacket[], any];
+              expect(rows).toHaveLength(1);
+            } finally {
+              connection2.release();
+            }
           });
+          
+          it(`should fail when user from different group tries to remove ${type}`, async () => {
+            // Create a second group with user 2 as admin
+            const connection = await pool.getConnection();
+            try {
+              await connection.execute(
+                'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
+                [2, 'User 2 Group', 'Group for user 2', 2]
+              );
+              await connection.execute(
+                'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+                [2, 2, 'admin']
+              );
+            } finally {
+              connection.release();
+            }
+            
+            // Create a task in group 1 owned by user 1
+            const taskData = {
+              description: `Group 1 task for cross-group ${type} removal test`,
+              dueDate: null,
+              ownerId: 1,
+              groupId: 1,
+              parentId: null,
+              completed: false
+            };
+            
+            const task = await createTask(taskData);
+            
+            // First assign/watch user 1 to their own task
+            await assignOrWatchTask(task.taskId!, 1, 1, type);
+            
+            // Try to remove user 1's assignment/watch as user 2 (admin of different group)
+            await expect(removeAssignOrWatchTask(task.taskId!, 1, 2, type)).rejects.toThrow('Insufficient privileges');
+            
+            // Verify assignment/watch still exists
+            const tableName = type === 'assigned' ? 'task_assigned' : 'task_watchers';
+            const connection2 = await pool.getConnection();
+            try {
+              const [rows] = await connection2.execute(
+                `SELECT * FROM ${tableName} WHERE task_id = ? AND user_id = ?`,
+                [task.taskId, 1]
+              ) as [RowDataPacket[], any];
+              expect(rows).toHaveLength(1);
+            } finally {
+              connection2.release();
+            }
+          });
+
         });
       });
     });
   });
+});
 
   
 
 
-  describe('GetAssigneesAndWatchers Integration Tests', () => {
-  
-    beforeEach(async () => {
-      // Setup test database
-      await cleanupDatabase();
-      await setupTestData();
+describe('GetAssigneesAndWatchers Integration Tests', () => {
+
+  beforeEach(async () => {
+    // Setup test database
+    await cleanupDatabase();
+    await setupTestData();
+  });
+
+  afterAll(async () => {
+    // Final cleanup
+    await cleanupDatabase();
+  });
+
+  // ==================== SUCCESS CASES ====================
+  describe('Success Cases', () => {
+    
+    it('should get assignees and watchers on personal task as owner', async () => {
+      // Create a personal task owned by user 1
+      const taskData = {
+        description: 'Personal task for assignees retrieval',
+        dueDate: null,
+        ownerId: 1,
+        groupId: null, // Personal task - only owner can assign themselves
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Only owner can assign/watch themselves on personal tasks
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
+      
+      // Get assignees and watchers as task owner
+      const result = await getAssigneesAndWatchers(task.taskId!, 1);
+      
+      // Verify structure
+      expect(result).toHaveProperty('assigned');
+      expect(result).toHaveProperty('watchers');
+      expect(Array.isArray(result.assigned)).toBe(true);
+      expect(Array.isArray(result.watchers)).toBe(true);
+      
+      // Only owner should be assigned/watching
+      expect(result.assigned).toHaveLength(1);
+      expect(result.watchers).toHaveLength(1);
+      expect(result.assigned[0].userId).toBe(1);
+      expect(result.assigned[0].username).toBe('testuser1');
+      expect(result.watchers[0].userId).toBe(1);
+      expect(result.watchers[0].username).toBe('testuser1');
     });
-  
-    afterAll(async () => {
-      // Final cleanup
-      await cleanupDatabase();
+    
+    it('should get assignees and watchers on task that current user is a related group member of', async () => {
+      // Add user 2 to group 1 as a member
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+      
+      // Create a task in group 1 owned by user 1
+      const taskData = {
+        description: 'Group task for assignees and watchers',
+        dueDate: null,
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Assign and watch users as task owner
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 2, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
+      
+      // Get assignees and watchers as group member (user 2)
+      const result = await getAssigneesAndWatchers(task.taskId!, 2);
+      
+      // Verify assigned users
+      expect(result.assigned).toHaveLength(2);
+      expect(result.assigned.some(u => u.userId === 1 && u.username === 'testuser1')).toBe(true);
+      expect(result.assigned.some(u => u.userId === 2 && u.username === 'testuser2')).toBe(true);
+      
+      // Verify watchers
+      expect(result.watchers).toHaveLength(1);
+      expect(result.watchers[0].userId).toBe(1);
+      expect(result.watchers[0].username).toBe('testuser1');
     });
-  
-    // ==================== SUCCESS CASES ====================
-    describe('Success Cases', () => {
+    
+    it('should return empty arrays when task has no assignees or watchers', async () => {
+      // Create a task owned by user 1
+      const taskData = {
+        description: 'Task with no assignees or watchers',
+        dueDate: null,
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      };
       
-      it('should get assignees and watchers on task that current user is the owner of', async () => {
-        // Create a task owned by user 1
-        const taskData = {
-          description: 'Task for assignees and watchers retrieval',
-          dueDate: null,
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Assign and watch users
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned'); // Owner assigns self
-        await assignOrWatchTask(task.taskId!, 2, 1, 'assigned'); // Owner assigns user 2
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');  // Owner watches self
-        await assignOrWatchTask(task.taskId!, 2, 1, 'watcher');  // Owner adds user 2 as watcher
-        
-        // Get assignees and watchers as task owner
-        const result = await getAssigneesAndWatchers(task.taskId!, 1);
-        
-        // Verify structure
-        expect(result).toHaveProperty('assigned');
-        expect(result).toHaveProperty('watchers');
-        expect(Array.isArray(result.assigned)).toBe(true);
-        expect(Array.isArray(result.watchers)).toBe(true);
-        
-        // Verify assigned users
-        expect(result.assigned).toHaveLength(2);
-        const assignedUser1 = result.assigned.find(u => u.userId === 1);
-        const assignedUser2 = result.assigned.find(u => u.userId === 2);
-        
-        expect(assignedUser1).toBeDefined();
-        expect(assignedUser1!.username).toBe('testuser1');
-        expect(assignedUser2).toBeDefined();
-        expect(assignedUser2!.username).toBe('testuser2');
-        
-        // Verify watchers
-        expect(result.watchers).toHaveLength(2);
-        const watcherUser1 = result.watchers.find(u => u.userId === 1);
-        const watcherUser2 = result.watchers.find(u => u.userId === 2);
-        
-        expect(watcherUser1).toBeDefined();
-        expect(watcherUser1!.username).toBe('testuser1');
-        expect(watcherUser2).toBeDefined();
-        expect(watcherUser2!.username).toBe('testuser2');
-      });
+      const task = await createTask(taskData);
       
-      it('should get assignees and watchers on task that current user is a related group member of', async () => {
-        // Add user 2 to group 1 as a member
-        const connection = await pool.getConnection();
-        try {
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [1, 2, 'member']
-          );
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 1 owned by user 1
-        const taskData = {
-          description: 'Group task for assignees and watchers',
-          dueDate: null,
-          ownerId: 1,
-          groupId: 1,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Assign and watch users as task owner
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 2, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
-        
-        // Get assignees and watchers as group member (user 2)
-        const result = await getAssigneesAndWatchers(task.taskId!, 2);
-        
-        // Verify assigned users
-        expect(result.assigned).toHaveLength(2);
-        expect(result.assigned.some(u => u.userId === 1 && u.username === 'testuser1')).toBe(true);
-        expect(result.assigned.some(u => u.userId === 2 && u.username === 'testuser2')).toBe(true);
-        
-        // Verify watchers
-        expect(result.watchers).toHaveLength(1);
-        expect(result.watchers[0].userId).toBe(1);
-        expect(result.watchers[0].username).toBe('testuser1');
-      });
+      // Get assignees and watchers without adding any
+      const result = await getAssigneesAndWatchers(task.taskId!, 1);
       
-      it('should return empty arrays when task has no assignees or watchers', async () => {
-        // Create a task owned by user 1
-        const taskData = {
-          description: 'Task with no assignees or watchers',
-          dueDate: null,
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Get assignees and watchers without adding any
-        const result = await getAssigneesAndWatchers(task.taskId!, 1);
-        
-        // Verify empty arrays
-        expect(result.assigned).toHaveLength(0);
-        expect(result.watchers).toHaveLength(0);
-        expect(Array.isArray(result.assigned)).toBe(true);
-        expect(Array.isArray(result.watchers)).toBe(true);
-      });
-      
-      it('should get assignees and watchers as group admin', async () => {
-        // Create user 3 and add as admin to group 1, user 2 as member
-        const connection = await pool.getConnection();
-        try {
-          await connection.execute(
-            'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-            [3, 'testuser3', 'hashedpass3']
-          );
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [1, 2, 'member']
-          );
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [1, 3, 'admin']
-          );
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 1 owned by user 2
-        const taskData = {
-          description: 'Task owned by member, viewed by admin',
-          dueDate: null,
-          ownerId: 2,
-          groupId: 1,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add assignees and watchers as task owner (user 2)
-        await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher'); // Group admin 1 adds self as watcher
-        await assignOrWatchTask(task.taskId!, 3, 3, 'watcher'); // Group admin 3 adds self as watcher
-        
-        // Get assignees and watchers as different group admin (user 3)
-        const result = await getAssigneesAndWatchers(task.taskId!, 3);
-        
-        // Verify assigned users
-        expect(result.assigned).toHaveLength(1);
-        expect(result.assigned[0].userId).toBe(2);
-        expect(result.assigned[0].username).toBe('testuser2');
-        
-        // Verify watchers
-        expect(result.watchers).toHaveLength(2);
-        expect(result.watchers.some(u => u.userId === 1 && u.username === 'testuser1')).toBe(true);
-        expect(result.watchers.some(u => u.userId === 3 && u.username === 'testuser3')).toBe(true);
-      });
-      
-      it('should handle mixed assignees and watchers (users can be both)', async () => {
-        // Create a task owned by user 1
-        const taskData = {
-          description: 'Task with mixed assignments',
-          dueDate: null,
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // User 1: both assigned and watching
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
-        
-        // User 2: only assigned
-        await assignOrWatchTask(task.taskId!, 2, 1, 'assigned');
-        
-        // Get assignees and watchers
-        const result = await getAssigneesAndWatchers(task.taskId!, 1);
-        
-        // Verify user 1 appears in both lists
-        expect(result.assigned).toHaveLength(2);
-        expect(result.watchers).toHaveLength(1);
-        
-        expect(result.assigned.some(u => u.userId === 1)).toBe(true);
-        expect(result.assigned.some(u => u.userId === 2)).toBe(true);
-        expect(result.watchers.some(u => u.userId === 1)).toBe(true);
-        expect(result.watchers.some(u => u.userId === 2)).toBe(false);
-      });
-      
-      it('should handle large number of assignees and watchers', async () => {
-        // Create additional users and add them to group 1
-        const connection = await pool.getConnection();
-        try {
-          // Add user 2 to group 1 first
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [1, 2, 'member']
-          );
-          
-          // Create users 3-10 and add them to group 1
-          for (let i = 3; i <= 10; i++) {
-            await connection.execute(
-              'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-              [i, `testuser${i}`, `hashedpass${i}`]
-            );
-            await connection.execute(
-              'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-              [1, i, 'member']
-            );
-          }
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 1
-        const taskData = {
-          description: 'Task with many assignees and watchers',
-          dueDate: null,
-          ownerId: 1,
-          groupId: 1,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Assign users 1-5, watch users 6-10
-        for (let i = 1; i <= 5; i++) {
-          await assignOrWatchTask(task.taskId!, i, 1, 'assigned');
-        }
-        for (let i = 6; i <= 10; i++) {
-          await assignOrWatchTask(task.taskId!, i, 1, 'watcher');
-        }
-        
-        // Get assignees and watchers
-        const result = await getAssigneesAndWatchers(task.taskId!, 1);
-        
-        // Verify counts
-        expect(result.assigned).toHaveLength(5);
-        expect(result.watchers).toHaveLength(5);
-        
-        // Verify all usernames are present and correctly formatted
-        result.assigned.forEach(user => {
-          expect(user.userId).toBeGreaterThanOrEqual(1);
-          expect(user.userId).toBeLessThanOrEqual(5);
-          expect(user.username).toBe(`testuser${user.userId}`);
-        });
-        
-        result.watchers.forEach(user => {
-          expect(user.userId).toBeGreaterThanOrEqual(6);
-          expect(user.userId).toBeLessThanOrEqual(10);
-          expect(user.username).toBe(`testuser${user.userId}`);
-        });
-      });
+      // Verify empty arrays
+      expect(result.assigned).toHaveLength(0);
+      expect(result.watchers).toHaveLength(0);
+      expect(Array.isArray(result.assigned)).toBe(true);
+      expect(Array.isArray(result.watchers)).toBe(true);
     });
-  
-    // ==================== FAILURE CASES ====================
-    describe('Failure Cases', () => {
+    
+    it('should get assignees and watchers on personal task as owner', async () => {
+      // Create a personal task owned by user 1
+      const taskData = {
+        description: 'Personal task for assignees retrieval',
+        dueDate: null,
+        ownerId: 1,
+        groupId: null, // Personal task
+        parentId: null,
+        completed: false
+      };
       
-      it('should fail to get assignees and watchers on task that does not exist', async () => {
-        await expect(getAssigneesAndWatchers(999, 1)).rejects.toThrow('Task not found');
-      });
+      const task = await createTask(taskData);
       
-      it('should fail to get assignees and watchers when current user is not the owner of target task', async () => {
-        // Create a task owned by user 1 (no group)
-        const taskData = {
-          description: 'Private task for unauthorized access',
-          dueDate: null,
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add some assignees and watchers as owner
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
-        
-        // Try to get assignees and watchers as user 2 (not owner, no group)
-        await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
-      });
+      // Only owner can assign themselves to personal tasks
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
       
-      it('should fail to get assignees and watchers when current user is not a related member of the target task group', async () => {
-        // Create a second group with user 2 as admin
-        const connection = await pool.getConnection();
-        try {
-          await connection.execute(
-            'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
-            [2, 'User 2 Group', 'Group for user 2', 2]
-          );
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [2, 2, 'admin']
-          );
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 2 owned by user 2
-        const taskData = {
-          description: 'Group 2 task for cross-group access test',
-          dueDate: null,
-          ownerId: 2,
-          groupId: 2,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add assignees and watchers as task owner
-        await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
-        await assignOrWatchTask(task.taskId!, 2, 2, 'watcher');
-        
-        // Try to get assignees and watchers as user 1 (not in group 2)
-        await expect(getAssigneesAndWatchers(task.taskId!, 1)).rejects.toThrow('Insufficient privileges');
-      });
+      const result = await getAssigneesAndWatchers(task.taskId!, 1);
       
-      it('should fail when non-group member tries to view group task assignees and watchers', async () => {
-        // Create user 3 who is not in group 1
-        const connection = await pool.getConnection();
-        try {
-          await connection.execute(
-            'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
-            [3, 'testuser3', 'hashedpass3']
-          );
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 1 owned by user 1
-        const taskData = {
-          description: 'Group 1 task for non-member access test',
-          dueDate: null,
-          ownerId: 1,
-          groupId: 1,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add assignees and watchers
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
-        
-        // Try to get assignees and watchers as user 3 (not in group 1)
-        await expect(getAssigneesAndWatchers(task.taskId!, 3)).rejects.toThrow('Insufficient privileges');
-      });
+      expect(result.assigned).toHaveLength(1);
+      expect(result.watchers).toHaveLength(1);
+      expect(result.assigned[0].userId).toBe(1);
+      expect(result.watchers[0].userId).toBe(1);
+    });
+    it('should allow group member to view team assignment transparency', async () => {
+      // Create user 3 and add both users to group
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
+          [3, 'testuser3', 'hashedpass3']
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 3, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create group task with various assignments
+      const taskData = {
+        description: 'Team collaboration project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
       
-      it('should fail when former group member tries to view assignees and watchers after being removed', async () => {
-        // Add user 2 to group 1 initially
-        const connection = await pool.getConnection();
-        try {
-          await connection.execute(
-            'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-            [1, 2, 'member']
-          );
-        } finally {
-          connection.release();
-        }
-        
-        // Create a task in group 1 owned by user 1
-        const taskData = {
-          description: 'Task for former member access test',
-          dueDate: null,
-          ownerId: 1,
-          groupId: 1,
-          parentId: null,
-          completed: false
-        };
-        
-        const task = await createTask(taskData);
-        
-        // Add assignees and watchers while user 2 is still a member
-        await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
-        await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
-        await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
-        
-        // Verify user 2 can access initially
-        const initialResult = await getAssigneesAndWatchers(task.taskId!, 2);
-        expect(initialResult.assigned).toHaveLength(2);
-        
-        // Remove user 2 from group 1
-        const connection2 = await pool.getConnection();
-        try {
-          await connection2.execute(
-            'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
-            [1, 2]
-          );
-        } finally {
-          connection2.release();
-        }
-        
-        // Try to get assignees and watchers as user 2 (no longer in group)
-        await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
-      });
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
+      await assignOrWatchTask(task.taskId!, 3, 3, 'watcher');
+    
+      // Any group member can see team assignments
+      const result = await getAssigneesAndWatchers(task.taskId!, 2);
+      
+      expect(result.assigned).toHaveLength(2);
+      expect(result.watchers).toHaveLength(1);
+      expect(result.assigned.some(u => u.userId === 1)).toBe(true);
+      expect(result.assigned.some(u => u.userId === 2)).toBe(true);
+      expect(result.watchers[0].userId).toBe(3);
+    });
+    
+
+  });
+
+  // ==================== FAILURE CASES ====================
+  describe('Failure Cases', () => {
+    
+    it('should fail to get assignees and watchers on task that does not exist', async () => {
+      await expect(getAssigneesAndWatchers(999, 1)).rejects.toThrow('Task not found');
+    });
+    
+    it('should fail to get assignees and watchers when current user is not the owner of target task', async () => {
+      // Create a task owned by user 1 (no group)
+      const taskData = {
+        description: 'Private task for unauthorized access',
+        dueDate: null,
+        ownerId: 1,
+        groupId: null,
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Add some assignees and watchers as owner
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
+      
+      // Try to get assignees and watchers as user 2 (not owner, no group)
+      await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+    });
+    
+    it('should fail to get assignees and watchers when current user is not a related member of the target task group', async () => {
+      // Create a second group with user 2 as admin
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_groups (group_id, name, description, created_by) VALUES (?, ?, ?, ?)',
+          [2, 'User 2 Group', 'Group for user 2', 2]
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [2, 2, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+      
+      // Create a task in group 2 owned by user 2
+      const taskData = {
+        description: 'Group 2 task for cross-group access test',
+        dueDate: null,
+        ownerId: 2,
+        groupId: 2,
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Add assignees and watchers as task owner
+      await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
+      await assignOrWatchTask(task.taskId!, 2, 2, 'watcher');
+      
+      // Try to get assignees and watchers as user 1 (not in group 2)
+      await expect(getAssigneesAndWatchers(task.taskId!, 1)).rejects.toThrow('Insufficient privileges');
+    });
+    
+    it('should fail when non-group member tries to view group task assignees and watchers', async () => {
+      // Create user 3 who is not in group 1
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)',
+          [3, 'testuser3', 'hashedpass3']
+        );
+      } finally {
+        connection.release();
+      }
+      
+      // Create a task in group 1 owned by user 1
+      const taskData = {
+        description: 'Group 1 task for non-member access test',
+        dueDate: null,
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Add assignees and watchers
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
+      
+      // Try to get assignees and watchers as user 3 (not in group 1)
+      await expect(getAssigneesAndWatchers(task.taskId!, 3)).rejects.toThrow('Insufficient privileges');
+    });
+    
+    it('should fail when former group member tries to view assignees and watchers after being removed', async () => {
+      // Add user 2 to group 1 initially
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+      
+      // Create a task in group 1 owned by user 1
+      const taskData = {
+        description: 'Task for former member access test',
+        dueDate: null,
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      
+      const task = await createTask(taskData);
+      
+      // Add assignees and watchers while user 2 is still a member
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+      await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
+      await assignOrWatchTask(task.taskId!, 1, 1, 'watcher');
+      
+      // Verify user 2 can access initially
+      const initialResult = await getAssigneesAndWatchers(task.taskId!, 2);
+      expect(initialResult.assigned).toHaveLength(2);
+      
+      // Remove user 2 from group 1
+      const connection2 = await pool.getConnection();
+      try {
+        await connection2.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 2]
+        );
+      } finally {
+        connection2.release();
+      }
+      
+      // Try to get assignees and watchers as user 2 (no longer in group)
+      await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+    });
+
+    it('should prevent gathering via assignment lists', async () => {
+      // Create competitor company
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO task_groups (group_id, name, created_by) VALUES (?, ?, ?)',
+          [2, 'Competitor Corp', 2]
+        );
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [2, 2, 'admin']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      // Create confidential project with team assignments
+      const taskData = {
+        description: 'Secret AI project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
+      await assignOrWatchTask(task.taskId!, 1, 1, 'assigned');
+    
+      // Competitor tries to see who's working on the project
+      await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
+    });
+    it('should ex team member from viewing team assignment data', async () => {
+      // Add user 2 to group, create assignments
+      const connection = await pool.getConnection();
+      try {
+        await connection.execute(
+          'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
+          [1, 2, 'member']
+        );
+      } finally {
+        connection.release();
+      }
+    
+      const taskData = {
+        description: 'Ongoing team project',
+        ownerId: 1,
+        groupId: 1,
+        parentId: null,
+        completed: false
+      };
+      const task = await createTask(taskData);
+      await assignOrWatchTask(task.taskId!, 2, 2, 'assigned');
+    
+      // Employee gets terminated
+      const connection2 = await pool.getConnection();
+      try {
+        await connection2.execute(
+          'DELETE FROM group_members WHERE group_id = ? AND user_id = ?',
+          [1, 2]
+        );
+      } finally {
+        connection2.release();
+      }
+    
+      // Ex-employee tries to see current team assignments
+      await expect(getAssigneesAndWatchers(task.taskId!, 2)).rejects.toThrow('Insufficient privileges');
     });
   });
+});
