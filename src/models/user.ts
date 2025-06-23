@@ -90,7 +90,7 @@ export const getAvailableTasks = async (
     userId: number,
     mode: 'personal' | 'assigned' | 'watching' | 'group',
     dateOption?: string,
-    sortBy: 'dueDate' | 'dateCreated' | 'owner' | 'taskId' = 'dueDate',
+    sortBy: 'dueDate' | 'dateCreated' | 'owner' | 'taskId' = 'dateCreated',
     groupOptions?: { 
         groupId: number, 
         ownerFilter?: number,  

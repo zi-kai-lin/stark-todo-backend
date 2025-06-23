@@ -295,6 +295,17 @@ export const updateTask = async (req: Request, res: Response): Promise<Response>
                 HttpStatus.FORBIDDEN
             );
         }
+
+
+        if (error.message === 'Invalid Update') {
+            return errorResponse(
+                res,
+                category,
+                ErrorCode.VALIDATION_ERROR,
+                "Child task must inherited parent's group properties",
+                HttpStatus.CONFLICT
+            );
+        }
         
         
         return errorResponse(

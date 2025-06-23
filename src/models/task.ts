@@ -347,7 +347,7 @@ export const updateTask = async (
         
         // child task cannot udpate group id
         if (isChildTask && updateData.groupId !== undefined) {
-            throw new Error('Insufficient privileges');
+            throw new Error('Invalid Update');
         }
         
         if (updateData.groupId !== undefined && updateData.groupId !== task.group_id) {
