@@ -27,23 +27,35 @@ const app = express();
 
 
 (async () => {
-    try {
-        // Test database connection
-/*         console.log('Initializing database connection');
- */        await testConnection();
-        
-        // Initialize database schema
-/*         console.log('Initializing database schema'); */
-        await initializeDatabase();
-        
-        console.log('Database initialization complete, app ready, ');
-    } catch (error) {
-        console.error('Database initialization failed:', error);
-        console.error('Exiting...');
-        process.exit(1); // Exit with error code
+    const maxRetries = 20;
+    const retryDelay = 3000; /* 3 second */
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`Database initialization attempt ${attempt}/${maxRetries}`);
+            
+            // Test database connection
+            await testConnection();
+            
+            // Initialize database schema
+            await initializeDatabase();
+            
+            console.log('Database initialization complete, app ready');
+            break; // Exit loop on success
+            
+        } catch (error) {
+            console.error(`Database initialization attempt ${attempt}/${maxRetries} failed:`, error);
+            
+            if (attempt === maxRetries) {
+                console.error('Database initialization failed after all retries. Exiting...');
+                process.exit(1);
+            }
+            
+            console.log(`Retrying in ${retryDelay / 1000} seconds...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
     }
-})();
-
+ })();
 
 
 app.use(cors(corsSettings));
