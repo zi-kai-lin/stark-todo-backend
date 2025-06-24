@@ -17,8 +17,6 @@ docker-compose up --build
 ```
 後端預設: `4005` port
 
-mySQL預設: `4006` port
-
-phpMyAdmin預設: `4007` port
+phpMyAdmin預設: `4006` port
 
 設定 env 值可更改於 `Dockerfile & docker-compose.yml`
