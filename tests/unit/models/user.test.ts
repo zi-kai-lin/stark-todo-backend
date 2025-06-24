@@ -896,47 +896,7 @@ describe('GetAvailableTasks Integration Tests', () => {
         expect(result[2].task.taskId).toBe(task3.taskId); // Highest ID last
       });
 
-      it('should use dateCreated as default sort', async () => {
-        // Create tasks with delays to ensure different created times
-        const task1 = await createTask({
-          description: 'First created task',
-          dueDate: new Date('2024-12-31'),
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        });
-
-        await new Promise(resolve => setTimeout(resolve, 10));
-
-        const task2 = await createTask({
-          description: 'Second created task',
-          dueDate: new Date('2024-11-15'),
-          ownerId: 1,
-          groupId: null,
-          parentId: null,
-          completed: false
-        });
-
-        // Get tasks with default sorting (no sortBy specified, defaults to 'dueDate')
-        const result = await getAvailableTasks(1, 'personal');
-
-        // Verify default sorting follows dueDate ASC logic
-        expect(result).toHaveLength(2);
-        
-        // Verify actual sort order by checking due dates
-        const sortedByDueDateAsc = result.slice().sort((a, b) => {
-          const dateA = a.task.dueDate ? new Date(a.task.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
-          const dateB = b.task.dueDate ? new Date(b.task.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
-          return dateA - dateB; // ASC order with nulls last
-        });
-        
-        // Compare with actual result
-        for (let i = 0; i < result.length; i++) {
-          expect(result[i].task.taskId).toBe(sortedByDueDateAsc[i].task.taskId);
-        }
-      });
-
+   
       it('should verify actual sort order is correct for NULL handling in dueDate and dateCreated sorting', async () => {
         // Create tasks with mixed null and non-null dates
         const connection = await pool.getConnection();

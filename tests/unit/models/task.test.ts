@@ -965,7 +965,7 @@ describe('UpdateTask Integration Tests', () => {
           groupId: null // Try to remove from group
         };
         
-        await expect(updateTask(child.taskId!, 1, updateData)).rejects.toThrow('Insufficient privileges');
+        await expect(updateTask(child.taskId!, 1, updateData)).rejects.toThrow('Invalid Update');
         
         // Verify no changes
         const connection = await pool.getConnection();

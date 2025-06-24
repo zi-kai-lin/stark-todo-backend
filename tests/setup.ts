@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { testConnection, initializeDatabase } from '../src/config/database';
+import { testConnection, initializeDatabase } from '../src/config/initialize';
 import { loadEnvPath } from '../src/utils/envVar';
 import { pool } from '../src/config/database';
 // Load test environment variables
