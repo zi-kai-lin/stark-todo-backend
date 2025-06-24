@@ -29,6 +29,9 @@ services:
       - MYSQL_DATABASE=to_do
     volumes:
       - mysql_data:/var/lib/mysql
+    ports:
+      - "4006:3306"
+    
     restart: unless-stopped
     networks:
       - todo-demo
@@ -36,11 +39,13 @@ services:
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
     ports:
-      - "4006:80"
+      - "4007:80"
     environment:
       - PMA_HOST=db
       - PMA_USER=root
       - PMA_PASSWORD=root
+      - PMA_VERBOSITY=0
+      - HIDE_PHP_VERSION=true
     depends_on:
       - db
     restart: unless-stopped
